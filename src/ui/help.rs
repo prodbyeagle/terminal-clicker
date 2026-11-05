@@ -37,6 +37,13 @@ const LEFT: &[Section] = &[
             ("ziehen", "titelleiste verschiebt fenster"),
         ],
     ),
+    (
+        "SETTINGS",
+        &[
+            ("", "ascii-hintergrund, animationen,"),
+            ("", "zahlenformat (voll / kb / kib), themes."),
+        ],
+    ),
 ];
 
 const RIGHT: &[Section] = &[
@@ -45,26 +52,26 @@ const RIGHT: &[Section] = &[
         &[
             ("+B/s", "bytes von allein, jede sekunde"),
             ("+B/klick", "mehr pro klick"),
-            ("×B/klick", "klickwert vervielfachen"),
-            ("×B/s", "alles passive vervielfachen"),
+            ("×", "klickwert / passives vervielfachen"),
+            ("krit", "chance auf klick ×10"),
+            ("klick+s", "jeder klick bringt sekunden B/s"),
+            ("events", "kommen öfter, halten länger"),
+            ("offline", "verdient weiter, wenn's zu ist"),
+            ("-kosten", "alle upgrades billiger"),
             ("???", "wird mit mehr bytes sichtbar"),
         ],
     ),
     (
         "EVENTS",
         &[
-            ("", "ab und zu ploppt ein kasten auf."),
-            ("", "klicken oder [e], bevor er weg ist:"),
+            ("", "ab und zu ploppt ein kasten auf – klick oder [e]:"),
             ("boost", "×4 auf alles, 30 s"),
             ("rausch", "×10 pro klick, 15 s"),
             ("fund", "sofort ein batzen bytes"),
-        ],
-    ),
-    (
-        "SETTINGS",
-        &[
-            ("", "ascii-hintergrund, animationen,"),
-            ("", "zahlenformat (voll / kb / kib), themes."),
+            ("kette", "jeder klick = 10 s passiv, 15 s"),
+            ("rabatt", "alle upgrades halber preis, 30 s"),
+            ("glitch", "meist ×7 auf alles. manchmal lag."),
+            ("ddos", "abwehren! ignoriert = ×0.5 B/s"),
         ],
     ),
 ];

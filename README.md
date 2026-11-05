@@ -24,30 +24,40 @@ jederzeit im Spiel mit `h` oder über den Reiter `hilfe`.
 Bytes sammeln, Upgrades kaufen, mehr Bytes sammeln.
 
 - **Klicken:** `space` oder den Button `[ KLICK ]`. Gedrückt halten ist erlaubt.
-- **Upgrades** (`u`): 13 Stück, freigeschaltet nach insgesamt verdienten Bytes. Nur das nächste
+- **Upgrades** (`u`): 30 Stück, freigeschaltet nach insgesamt verdienten Bytes. Nur das nächste
   gesperrte Upgrade ist schon lesbar, alles danach bleibt `???`. Die Kosten steigen pro Level.
 
   | Effekt | Bedeutung | Beispiele |
   | --- | --- | --- |
-  | `+B/s` | passives Einkommen | auto_click.sh, cron.d, fork_daemon, mmap.so, … quantum.qpu |
+  | `+B/s` | passives Einkommen | auto_click.sh, cron.d, kernel.ko, … beyond.null |
   | `+B/klick` | mehr pro Klick | macro.kbd, hotkey.sh |
-  | `×B/klick` | Klickwert vervielfachen | double.bin, overclock.cfg |
-  | `×B/s gesamt` | alles Passive vervielfachen | gzip.d |
+  | `×B/klick` | Klickwert vervielfachen | double.bin, overclock.cfg, neural.link |
+  | `×B/s gesamt` | alles Passive vervielfachen | gzip.d, ai.model, singularity.ai |
+  | `krit-chance` | Chance (max. 50 %) auf einen Klick ×10 | lucky.bit |
+  | `klick +s B/s` | jeder Klick bringt Sekunden passives Einkommen | pipe.sh |
+  | `events öfter & länger` | kürzerer Abstand, längere Boni | notify.d |
+  | `offline` | verdient bei geschlossenem Spiel weiter (max. 8 h) | systemd.service |
+  | `-kosten` | alle Upgrades billiger (bis höchstens −75 %) | compiler.o3 |
 
-- **Events:** Ab und zu (alle 45–110 s, nur in der Hauptansicht) ploppt ein Kasten auf. Wer ihn
-  innerhalb von 12 s anklickt oder `e` drückt, bekommt:
+- **Events:** Ab und zu (alle 45–110 s, mit `notify.d` öfter, nur in der Hauptansicht) ploppt ein
+  Kasten auf. Wer ihn innerhalb von 12 s anklickt oder `e` drückt, bekommt:
 
   | Event | Wirkung |
   | --- | --- |
   | BOOST ×4 | ×4 auf allen Ertrag (Klick und passiv), 30 s |
   | KLICK-RAUSCH ×10 | ×10 pro Klick, 15 s |
   | DATENFUND | sofort 15 % vom Kontostand, höchstens 15 min passives Einkommen |
+  | KETTENREAKTION | jeder Klick bringt zusätzlich 10 s passives Einkommen, 15 s |
+  | RABATT -50 % | alle Upgrades zum halben Preis, 30 s |
+  | GLITCH ??? | Glücksspiel: 65 % OVERDRIVE ×7 auf alles (20 s), sonst LAG ×0.5 (10 s) |
+  | DDOS-ANGRIFF | Bedrohung (gestrichelter Kasten): abwehren = +60 s Einkommen, ignorieren = LAG ×0.5 B/s für 30 s |
 
-  Laufende Boni stehen mit Restzeit-Balken unter dem Button. Dasselbe Event nochmal setzt die
+  Laufende Boni stehen mit Restzeit-Balken unter dem Button. Dieselbe Wirkung nochmal setzt die
   Zeit wieder auf voll.
 - **Datenpakete:** Passives Einkommen fliegt als `+451 B fork_daemon` über den Bildschirm. Höchstens
   12 Pakete gleichzeitig, der Rest kommt ins nächste Paket – auch bei riesigem Einkommen bleibt es ruhig.
 - **Speichern:** automatisch alle 30 s, nach jedem Kauf und beim Beenden (`q`).
+- **Kein Limit:** Alle Mengen sind `f64` – es geht weit über 18,45 EB (`u64::MAX`) hinaus, bis etwa 10^308.
 
 ## Tasten
 
@@ -84,7 +94,8 @@ Gespeichert in `settings.json`:
 - **ascii-hintergrund** an/aus, mit **dichte** und **geschwindigkeit** – Zeichen-Rauschen hinter
   allem, pausiert bei inaktivem Fenster.
 - **animationen** an/aus – Zähler-Rollen, Log-Entschlüsseln, Pakete, Button-Effekte, Blinken.
-- **zahlen:** `voll` (`10048514 B`), `kb/mb` (`10.05 MB`, 1000er) oder `kib/mib` (`9.58 MiB`, 1024er).
+- **zahlen:** `voll` (`10048514 B`), `kb/mb` (`10.05 MB`, 1000er, bis QB) oder `kib/mib`
+  (`9.58 MiB`, 1024er, bis QiB). Ganz große Werte werden wissenschaftlich geschrieben (`1.23e35 B`).
 - **theme:** system, hell, dunkel, phosphor, amber, eis, mitternacht, alarm, papier, blaupause.
 
 ## Admin-Panel
@@ -92,12 +103,13 @@ Gespeichert in `settings.json`:
 Nur wenn das Spiel mit `--admin` oder `--debug` gestartet wird – sonst gibt es weder Reiter noch
 Kürzel. Dann `a` oder Reiter `admin`:
 
-- Bytes geben (+1.000 bis +1.000.000.000, ×10) – zählt wie verdient, inkl. Meilensteine
+- Bytes geben (+1e3, +1e6, +1e9, +1e15, +1e21, ×10) – zählt wie verdient, inkl. Meilensteine
 - alle Upgrades freischalten, +1 Level auf alle Upgrades
-- Event auslösen (zufällig, erscheint in der Hauptansicht)
+- Event auslösen – zufällig oder gezielt (`←→` wählt das Event), erscheint in der Hauptansicht
 - Zeitraffer ×1 / ×10 / ×100 / ×1000 für passives Einkommen
 - Spielstand zurücksetzen (zweimal bestätigen, Spielzeit bleibt)
-- Stats: Kontostand, verdient, Klicks, Raten, Multiplikator, Spielzeit, Einkommen nach Quelle
+- Stats: Kontostand, verdient, Klicks, Raten, Multiplikatoren, Krit-Chance, Offline-Anteil,
+  Kosten-Faktor, Event-Abstand, Spielzeit, Einkommen nach Quelle
 
 ## Speicherort
 
@@ -134,7 +146,7 @@ prüft das). Level werden per `id` gespeichert, alte Spielstände bleiben gülti
 kommt in `description()` in `src/ui/upgrades.rs`.
 
 ```rust
-up("fusion.core", 5e9, 1.15, 4e9 as u64, Effect::PerSecond(9_000_000.0)),
+up("fusion.core", 5e21, 1.15, 4e21, Effect::PerSecond(3e15)),
 ```
 
 **Neues Theme:** in `src/theme.rs` an `THEMES` anhängen – erscheint automatisch in den Settings.
@@ -154,8 +166,8 @@ ThemeDef {
 fällt auf „system“ zurück.
 
 **Neues Event:** `EventKind` in `src/game.rs` erweitern (`title`, `description`, Wirkung in
-`trigger_event` / `passive_buff` / `click_buff`) und die Gewichtung in `spawn_event` in
-`src/ui/main_view.rs` anpassen.
+`trigger_event`, ggf. eine neue `BuffKind` mit Wirkung in `passive_buff` / `click_buff`) und in
+`EVENT_WEIGHTS` eintragen, wie oft es kommen soll.
 
 ## Lizenz
 

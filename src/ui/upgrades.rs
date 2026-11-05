@@ -19,6 +19,23 @@ fn description(id: &str) -> &'static str {
         "botnet.py" => "viele kleine rechner klicken für dich.",
         "cluster.yaml" => "ein ganzer cluster. kubernetes inklusive.",
         "quantum.qpu" => "klickt in allen zuständen gleichzeitig.",
+        "lucky.bit" => "manchmal kippt ein bit richtig: kritischer klick ×10.",
+        "notify.d" => "lauscht auf events: kommen öfter, halten länger.",
+        "systemd.service" => "läuft weiter, auch wenn das spiel zu ist (max. 8 h).",
+        "pipe.sh" => "leitet passives einkommen in jeden klick um.",
+        "compiler.o3" => "optimiert alles: alle upgrades werden billiger.",
+        "neural.link" => "der finger ist jetzt direkt am kernel. ×5 pro level.",
+        "ai.model" => "ein modell, das bytes vorhersagt. ×2 auf alles passive.",
+        "dyson.sphere" => "eine sonne als netzteil.",
+        "simulation.exe" => "simuliert ein universum, das für dich klickt.",
+        "multiverse.fork" => "fork() auf realitätsebene.",
+        "blackhole.dll" => "unendliche dichte, unendlicher speicher.",
+        "heat_death.sh" => "läuft bis zum wärmetod. und danach.",
+        "big_bang.iso" => "startet das universum neu. mit mehr bytes.",
+        "singularity.ai" => "denkt schneller als du klickst. ×3 auf alles passive.",
+        "omega.point" => "jede information im universum, gleichzeitig.",
+        "infinity.loop" => "while(true) { bytes++; }",
+        "beyond.null" => "was nach dem ende kommt. ziemlich viel.",
         _ => "",
     }
 }
@@ -29,8 +46,13 @@ pub fn effect_label(effect: Effect, f: NumberFormat) -> String {
     match effect {
         Effect::PerSecond(n) => format!("+{}", format::rate(n, f)),
         Effect::ClickAdd(n) => format!("+{}/klick", format::bytes(n, f)),
-        Effect::ClickMul(m) => format!("×{m} B/klick"),
+        Effect::ClickMul(m) => format!("×{} B/klick", trim_float(m)),
         Effect::PassiveMul(m) => format!("×{} B/s gesamt", trim_float(m)),
+        Effect::Crit(c) => format!("+{} % krit-chance", trim_float(c * 100.)),
+        Effect::ClickFromPassive(secs) => format!("klick +{} s B/s", trim_float(secs)),
+        Effect::EventBoost => "events öfter & länger".into(),
+        Effect::Offline(f) => format!("+{} % offline", trim_float(f * 100.)),
+        Effect::Discount(m) => format!("-{} % kosten", trim_float((1. - m) * 100.)),
     }
 }
 
@@ -78,7 +100,7 @@ pub fn render_upgrades(
             _ => is_sel && unlocked,
         };
         let cost = game.cost(i);
-        let affordable = game.bytes >= cost as f64;
+        let affordable = game.bytes >= cost;
 
         let (fg, bg) = if inverted { (theme.bg, theme.fg) } else { (theme.fg, theme.bg) };
         let muted = if inverted { theme.bg } else { theme.dim };

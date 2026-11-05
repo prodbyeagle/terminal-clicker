@@ -1,7 +1,7 @@
 use crate::ascii::anim::{AnimKind, Animator, CounterRoll, RollDir, decode_text, scramble_frames};
 use crate::ascii::background::{SPEEDS, render_rows};
 use crate::format::{self, NumberFormat};
-use crate::game::{BuyError, EventKind, EventOutcome, Game, GameEvent, UPGRADES};
+use crate::game::{BuyError, EVENT_WEIGHTS, EventKind, EventOutcome, Game, GameEvent, UPGRADES};
 use crate::save::{self, Settings};
 use crate::theme::{self, Theme};
 use crate::ui::admin::{self as admin_ui, AdminInfo, TIME_SCALES, bar, fmt_num, render_admin};
@@ -16,7 +16,7 @@ use crate::{
     Quit, Right, Up,
 };
 use gpui::{
-    Context, Div, ScrollHandle, FocusHandle, MouseButton, Subscription, Task, Window, WindowAppearance,
+    Context, Div, FontWeight, ScrollHandle, FocusHandle, MouseButton, Subscription, Task, Window, WindowAppearance,
     div, prelude::*, px,
 };
 use std::time::{Duration, Instant};
@@ -110,6 +110,8 @@ pub struct ClickerApp {
     upgrade_scroll: ScrollHandle,
     settings_sel: usize,
     admin_sel: usize,
+    /// Auswahl für „event auslösen“ (0 = zufällig).
+    admin_event: usize,
     /// Index in `TIME_SCALES`.
     time_warp: usize,
     /// Reset einmal ausgelöst, wartet bis dahin auf Bestätigung.
@@ -117,6 +119,8 @@ pub struct ClickerApp {
     bg_time: f32,
     last_save: Instant,
     last_sig: (u64, u64, bool, u64),
+    /// Letzter Klick war kritisch (für die Darstellung des +N).
+    last_crit: bool,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
 }
@@ -128,8 +132,16 @@ impl ClickerApp {
         window.focus(&focus);
 
         let loaded = save::load_game();
-        let game = loaded.as_ref().map(Game::from_save).unwrap_or_default();
+        let mut game = loaded.as_ref().map(Game::from_save).unwrap_or_default();
+        game.seed(save::now_unix() ^ 0x9e37_79b9_7f4a_7c15);
         let settings = save::load_settings();
+        // Offline-Einkommen (systemd.service) für die Zeit seit dem letzten Speichern.
+        let offline_secs = loaded
+            .as_ref()
+            .filter(|s| s.saved_at > 0)
+            .map(|s| save::now_unix().saturating_sub(s.saved_at) as f64)
+            .unwrap_or(0.);
+        let offline_gain = game.apply_offline(offline_secs, &mut Vec::new());
         let boot_lines = boot_lines(&game, loaded.is_some(), settings.number_format);
 
         let subscriptions = vec![
@@ -189,6 +201,12 @@ impl ClickerApp {
         if loaded.is_some() {
             log.push(format!("  spielstand geladen: {}", format::bytes_padded(game.whole_bytes(), settings.number_format)));
         }
+        if offline_gain > 0. {
+            log.push(format!(
+                "> offline verdient: +{}",
+                format::bytes(offline_gain, settings.number_format)
+            ));
+        }
 
         let now = Instant::now();
         let mut counter = CounterRoll::new(COUNTER_ROLL_MS);
@@ -218,11 +236,13 @@ impl ClickerApp {
             upgrade_scroll: ScrollHandle::new(),
             settings_sel: 0,
             admin_sel: 0,
+            admin_event: 0,
             time_warp: 0,
             reset_armed: None,
             bg_time: 0.,
             last_save: now,
             last_sig: (0, 0, false, 0),
+            last_crit: false,
             _subscriptions: subscriptions,
             _tasks: vec![tick, bg],
         }
@@ -284,7 +304,7 @@ impl ClickerApp {
 
         // Nur neu zeichnen, wenn sich sichtbar etwas geändert hat.
         let sig = (
-            self.game.whole_bytes(),
+            self.game.whole_bytes().to_bits(),
             (self.game.clicks_per_second(self.game_time()) * 10.) as u64,
             self.cursor_on(),
             self.log.pushed(),
@@ -329,8 +349,8 @@ impl ClickerApp {
             if active >= MAX_PACKETS || self.packet_acc[i] < 1. {
                 continue; // weiter sammeln, kommt im nächsten Paket mit
             }
-            let value = self.packet_acc[i].floor() as u64;
-            self.packet_acc[i] -= value as f64;
+            let value = self.packet_acc[i].floor();
+            self.packet_acc[i] -= value;
             self.packet_timer[i] = 0.;
 
             // Links oder rechts vom Zähler auftauchen, nie mitten drauf.
@@ -356,7 +376,8 @@ impl ClickerApp {
     // ── Events ────────────────────────────────────────────────────────────
 
     fn schedule_next_event(&mut self, gap: (f32, f32)) {
-        let secs = self.anim.rng.range(gap.0, gap.1);
+        // notify.d lässt Events öfter kommen.
+        let secs = self.anim.rng.range(gap.0, gap.1) * self.game.event_interval_multiplier() as f32;
         self.next_event_at = Instant::now() + Duration::from_secs_f32(secs);
     }
 
@@ -366,7 +387,14 @@ impl ClickerApp {
         if let Some(popup) = self.event_popup {
             if now.saturating_duration_since(popup.spawned) > EVENT_LIFETIME {
                 self.event_popup = None;
-                self.log.push(format!("  verpasst: {}", popup.kind.title().to_lowercase()));
+                match self.game.miss_event(popup.kind) {
+                    Some(EventOutcome::Buff { kind, seconds }) => self.log.push(format!(
+                        "! nicht abgewehrt: {} ({} s)",
+                        kind.title().to_lowercase(),
+                        seconds as u32
+                    )),
+                    _ => self.log.push(format!("  verpasst: {}", popup.kind.title().to_lowercase())),
+                }
                 self.schedule_next_event(EVENT_GAP);
             }
             return true;
@@ -382,10 +410,17 @@ impl ClickerApp {
     /// Ein Event aufploppen lassen (`None` = zufällige Art).
     fn spawn_event(&mut self, kind: Option<EventKind>) {
         let rng = &mut self.anim.rng;
-        let kind = kind.unwrap_or_else(|| match rng.range(0., 1.) {
-            r if r < 0.5 => EventKind::Boost,
-            r if r < 0.75 => EventKind::Frenzy,
-            _ => EventKind::Windfall,
+        let kind = kind.unwrap_or_else(|| {
+            // Gewichtete Auswahl aus EVENT_WEIGHTS.
+            let total: f64 = EVENT_WEIGHTS.iter().map(|(_, w)| w).sum();
+            let mut r = rng.range(0., 1.) as f64 * total;
+            EVENT_WEIGHTS
+                .iter()
+                .find(|(_, w)| {
+                    r -= w;
+                    r < 0.
+                })
+                .map_or(EventKind::Boost, |(k, _)| *k)
         });
         // In einer der vier Ecken, damit es nie über Zähler oder Button liegt.
         let x = if rng.range(0., 1.) < 0.5 { rng.range(0.03, 0.12) } else { rng.range(0.6, 0.68) };
@@ -407,6 +442,10 @@ impl ClickerApp {
             )),
             EventOutcome::Bytes(n) => self.log.push(format!(
                 "> datenfund: +{}",
+                format::bytes(n, self.settings.number_format)
+            )),
+            EventOutcome::Defended(n) => self.log.push(format!(
+                "> ddos abgewehrt: +{}",
                 format::bytes(n, self.settings.number_format)
             )),
         }
@@ -456,7 +495,8 @@ impl ClickerApp {
     fn click(&mut self, cx: &mut Context<Self>) {
         let now = Instant::now();
         let mut events = Vec::new();
-        let gain = self.game.click(self.game_time(), &mut events);
+        let result = self.game.click(self.game_time(), &mut events);
+        self.last_crit = result.crit;
 
         // Gedrückt-Zustand ca. 80 ms invertiert, danach neu zeichnen.
         self.pressed_until = Some(now + PRESS);
@@ -469,7 +509,12 @@ impl ClickerApp {
         if self.settings.animations {
             let id = self.anim.next_id();
             let x = self.anim.rng.range(-60., 60.);
-            let label = format!("+{gain}");
+            let amount = format::bytes(result.gain, self.settings.number_format);
+            let label = if result.crit {
+                format!("KRIT +{amount}")
+            } else {
+                format!("+{amount}")
+            };
             self.anim.play(
                 AnimKind::Float { id, x },
                 vec![label.clone(), label, "·".into()],
@@ -572,7 +617,12 @@ impl ClickerApp {
     fn on_left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
         match self.screen {
             Screen::Settings => self.change_setting(-1, cx),
-            Screen::Admin if admin_ui::ITEMS[self.admin_sel] == admin_ui::Item::TimeWarp => {
+            Screen::Admin
+                if matches!(
+                    admin_ui::ITEMS[self.admin_sel],
+                    admin_ui::Item::TimeWarp | admin_ui::Item::SpawnEvent
+                ) =>
+            {
                 self.run_admin(-1, cx)
             }
             _ => {}
@@ -584,6 +634,10 @@ impl ClickerApp {
             Screen::Settings => self.change_setting(1, cx),
             Screen::Admin if admin_ui::ITEMS[self.admin_sel] == admin_ui::Item::TimeWarp => {
                 self.run_admin(1, cx)
+            }
+            Screen::Admin if admin_ui::ITEMS[self.admin_sel] == admin_ui::Item::SpawnEvent => {
+                self.cycle_admin_event(1);
+                cx.notify();
             }
             _ => {}
         }
@@ -610,7 +664,7 @@ impl ClickerApp {
         let mut events = Vec::new();
         match item {
             Item::Grant(n) if delta > 0 => {
-                self.game.admin_grant(n as f64, &mut events);
+                self.game.admin_grant(n, &mut events);
                 self.log.push(format!("> admin: +{} B", fmt_num(n)));
             }
             Item::Times10 if delta > 0 => {
@@ -627,7 +681,12 @@ impl ClickerApp {
             }
             Item::SpawnEvent if delta > 0 => {
                 self.log.push("> admin: event ausgelöst (in main)");
-                self.spawn_event(None);
+                let kind = self.admin_event.checked_sub(1).map(|i| EVENT_WEIGHTS[i].0);
+                self.spawn_event(kind);
+            }
+            Item::SpawnEvent => {
+                // ←/Rechtsklick blättert rückwärts; → läuft über on_right.
+                self.cycle_admin_event(-1);
             }
             Item::TimeWarp => {
                 let len = TIME_SCALES.len() as i32;
@@ -653,6 +712,11 @@ impl ClickerApp {
             self.persist();
         }
         cx.notify();
+    }
+
+    fn cycle_admin_event(&mut self, delta: i32) {
+        let len = EVENT_WEIGHTS.len() as i32 + 1;
+        self.admin_event = (self.admin_event as i32 + delta).rem_euclid(len) as usize;
     }
 
     pub(crate) fn hover_admin(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -928,15 +992,19 @@ impl ClickerApp {
             AnimKind::Float { x, .. } => {
                 let frame = a.frame(now)?.to_string();
                 let p = a.progress(now);
+                let crit = frame.starts_with("KRIT");
                 Some(
                     div()
                         .absolute()
                         .top(px(-22. - p * 46.))
-                        .left(px(108. + x))
-                        .w(px(44.))
+                        // Mittig über dem 260 px breiten Button, Breite für lange Werte.
+                        .left(px(30. + x))
+                        .w(px(200.))
                         .flex()
                         .justify_center()
+                        .whitespace_nowrap()
                         .opacity(1. - p * 0.7)
+                        .when(crit, |d| d.text_size(px(18.)).font_weight(FontWeight::BOLD))
                         .child(frame),
                 )
             }
@@ -1035,22 +1103,27 @@ impl ClickerApp {
     fn render_buffs(&self, theme: &Theme) -> Div {
         div()
             .mt(px(18.))
-            .h(px(44.))
+            .min_h(px(44.))
             .flex()
             .flex_col()
             .items_center()
             .gap(px(2.))
             .children(self.game.buffs().iter().map(|b| {
+                let bad = b.kind.is_bad();
                 div()
                     .flex()
                     .gap(px(10.))
-                    .child(b.kind.title())
+                    .whitespace_nowrap()
+                    // Mali (LAG) gedimmt mit Warnzeichen, damit man sie sofort erkennt.
+                    .when(bad, |d| d.text_color(theme.dim))
+                    .child(format!("{}{}", if bad { "! " } else { "" }, b.kind.title()))
                     .child(
                         div()
                             .text_color(theme.dim)
                             .child(bar(b.remaining / b.duration, 16)),
                     )
                     .child(format!("{:>2} s", b.remaining.ceil() as u32))
+                    .child(div().text_color(theme.dim).child(b.kind.effect_hint()))
             }))
     }
 
@@ -1072,7 +1145,9 @@ impl ClickerApp {
         let blink = animate && (age.as_millis() / 450).is_multiple_of(2);
         let tick = (age.as_millis() / 40) as u64;
         let decode = if animate { age.as_secs_f32() / 0.35 } else { 1. };
-        let title = decode_text(&format!("! {}", popup.kind.title()), decode, tick);
+        let threat = popup.kind.is_threat();
+        let prefix = if threat { "!!" } else { "!" };
+        let title = decode_text(&format!("{prefix} {}", popup.kind.title()), decode, tick);
         let (head_fg, head_bg) = if blink { (theme.bg, theme.fg) } else { (theme.fg, theme.bg) };
 
         Some(
@@ -1086,6 +1161,8 @@ impl ClickerApp {
                 .bg(theme.bg)
                 .border_2()
                 .border_color(theme.fg)
+                // Bedrohungen (DDoS) gestrichelt – die will man wegklicken.
+                .when(threat, |d| d.border_dashed())
                 .cursor_pointer()
                 .on_mouse_down(
                     MouseButton::Left,
@@ -1254,7 +1331,7 @@ impl ClickerApp {
                 vec![
                     KeyHint::info("↑↓", "wählen"),
                     KeyHint::new("enter", "ausführen", Confirm),
-                    KeyHint::info("←→", "zeitraffer"),
+                    KeyHint::info("←→", "auswahl"),
                     KeyHint::new("esc", "zurück", Back),
                     quit(),
                 ],
@@ -1321,6 +1398,7 @@ impl Render for ClickerApp {
                                 .count(),
                             time_scale: TIME_SCALES[self.time_warp],
                             reset_armed: self.reset_armed.is_some(),
+                            event_choice: self.admin_event,
                         };
                         div()
                             .flex_1()

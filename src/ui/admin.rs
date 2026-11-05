@@ -1,6 +1,6 @@
 //! Admin-Panel: Bytes und Upgrades geben, Zeitraffer, Reset – plus Stats.
 
-use crate::game::{Game, UPGRADES};
+use crate::game::{EVENT_WEIGHTS, Game, UPGRADES};
 use crate::theme::Theme;
 use crate::ui::main_view::ClickerApp;
 use crate::ui::upgrades::trim_float;
@@ -8,7 +8,7 @@ use gpui::{Context, Div, MouseButton, div, prelude::*, px};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Item {
-    Grant(u64),
+    Grant(f64),
     Times10,
     UnlockAll,
     LevelAll,
@@ -17,11 +17,12 @@ pub enum Item {
     Reset,
 }
 
-pub const ITEMS: [Item; 10] = [
-    Item::Grant(1_000),
-    Item::Grant(100_000),
-    Item::Grant(10_000_000),
-    Item::Grant(1_000_000_000),
+pub const ITEMS: [Item; 11] = [
+    Item::Grant(1e3),
+    Item::Grant(1e6),
+    Item::Grant(1e9),
+    Item::Grant(1e15),
+    Item::Grant(1e21),
     Item::Times10,
     Item::UnlockAll,
     Item::LevelAll,
@@ -35,6 +36,8 @@ pub const TIME_SCALES: [u32; 4] = [1, 10, 100, 1000];
 
 /// Was das Panel außer dem Spielstand noch anzeigt.
 pub struct AdminInfo {
+    /// Gewähltes Event für „event auslösen“: 0 = zufällig, sonst Index+1 in `EVENT_WEIGHTS`.
+    pub event_choice: usize,
     pub clicks_per_second: f64,
     pub session_seconds: f64,
     pub packets: usize,
@@ -43,9 +46,12 @@ pub struct AdminInfo {
     pub reset_armed: bool,
 }
 
-/// 1234567 → "1.234.567"
-pub fn fmt_num(v: u64) -> String {
-    let digits = v.to_string();
+/// 1234567 → "1.234.567"; ab 10^21 wissenschaftlich (`1.23e24`).
+pub fn fmt_num(v: f64) -> String {
+    if v.abs() >= 1e21 {
+        return crate::format::sci(v);
+    }
+    let digits = format!("{:.0}", v.floor());
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
         if i > 0 && (digits.len() - i).is_multiple_of(3) {
@@ -73,10 +79,18 @@ fn label(item: Item, info: &AdminInfo) -> String {
         Item::Times10 => "bytes ×10".into(),
         Item::UnlockAll => "alle upgrades freischalten".into(),
         Item::LevelAll => "+1 level auf alle upgrades".into(),
-        Item::SpawnEvent => "event auslösen (zufällig)".into(),
+        Item::SpawnEvent => format!("event auslösen  <{}>", event_choice_label(info.event_choice)),
         Item::TimeWarp => format!("zeitraffer  <×{}>", info.time_scale),
         Item::Reset if info.reset_armed => "wirklich zurücksetzen? nochmal enter".into(),
         Item::Reset => "spielstand zurücksetzen".into(),
+    }
+}
+
+/// Name der Auswahl für „event auslösen“.
+pub fn event_choice_label(choice: usize) -> String {
+    match choice.checked_sub(1).and_then(|i| EVENT_WEIGHTS.get(i)) {
+        Some((kind, _)) => kind.title().to_lowercase(),
+        None => "zufällig".into(),
     }
 }
 
@@ -162,8 +176,8 @@ pub fn render_admin(
 
     let stats = panel(theme, "STATS")
         .child(stat(theme, "bytes", fmt_num(game.whole_bytes())))
-        .child(stat(theme, "verdient gesamt", fmt_num(game.total_earned as u64)))
-        .child(stat(theme, "klicks gesamt", fmt_num(game.total_clicks)))
+        .child(stat(theme, "verdient gesamt", fmt_num(game.total_earned)))
+        .child(stat(theme, "klicks gesamt", fmt_num(game.total_clicks as f64)))
         .child(stat(theme, "B/klick", fmt_num(game.per_click())))
         .child(stat(theme, "klicks/s", format!("{:.1}", info.clicks_per_second)))
         .child(stat(theme, "B/s", trim_float(total_rate)))
@@ -182,6 +196,18 @@ pub fn render_admin(
         .child(stat(theme, "sitzung", fmt_duration(info.session_seconds)))
         .child(stat(theme, "pakete aktiv", info.packets.to_string()))
         .child(stat(theme, "zeitraffer", format!("×{}", info.time_scale)))
+        .child(stat(theme, "krit-chance", format!("{} %", trim_float(game.crit_chance() * 100.))))
+        .child(stat(
+            theme,
+            "offline-anteil",
+            format!("{} %", trim_float(game.offline_fraction() * 100.)),
+        ))
+        .child(stat(theme, "kosten-faktor", format!("×{:.3}", game.cost_multiplier())))
+        .child(stat(
+            theme,
+            "event-abstand",
+            format!("×{:.2}", game.event_interval_multiplier()),
+        ))
         .child(
             div()
                 .pt(px(12.))
@@ -211,7 +237,7 @@ pub fn render_admin(
                     div()
                         .pt(px(12.))
                         .text_color(theme.dim)
-                        .child("# enter/klick = ausführen · ←→ = zeitraffer"),
+                        .child("# enter/klick = ausführen · ←→ = auswahl ändern"),
                 ),
         )
         .child(stats)
@@ -223,10 +249,11 @@ mod tests {
 
     #[test]
     fn formats_numbers_and_durations() {
-        assert_eq!(fmt_num(0), "0");
-        assert_eq!(fmt_num(999), "999");
-        assert_eq!(fmt_num(1_000), "1.000");
-        assert_eq!(fmt_num(1_234_567), "1.234.567");
+        assert_eq!(fmt_num(0.), "0");
+        assert_eq!(fmt_num(999.), "999");
+        assert_eq!(fmt_num(1_000.), "1.000");
+        assert_eq!(fmt_num(1_234_567.), "1.234.567");
+        assert_eq!(fmt_num(2e25), "2.00e25");
         assert_eq!(fmt_duration(65.), "1m 05s");
         assert_eq!(fmt_duration(3725.), "1h 02m 05s");
     }

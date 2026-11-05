@@ -182,7 +182,7 @@ pub struct DigitRoll {
 #[derive(Debug, Clone)]
 pub struct CounterRoll {
     digits: Vec<DigitRoll>,
-    last_value: u64,
+    last_value: f64,
     duration: Duration,
 }
 
@@ -190,13 +190,13 @@ impl CounterRoll {
     pub fn new(duration_ms: u64) -> Self {
         Self {
             digits: Vec::new(),
-            last_value: 0,
+            last_value: 0.,
             duration: Duration::from_millis(duration_ms),
         }
     }
 
     /// Neuen Wert übernehmen. `animate = false` setzt ihn ohne Rollen.
-    pub fn update(&mut self, value: u64, text: &str, animate: bool, now: Instant) {
+    pub fn update(&mut self, value: f64, text: &str, animate: bool, now: Instant) {
         let chars: Vec<char> = text.chars().collect();
         let dir = if value >= self.last_value { RollDir::Up } else { RollDir::Down };
         let old = std::mem::take(&mut self.digits);
@@ -306,8 +306,8 @@ mod tests {
     fn counter_rolls_only_changed_digits() {
         let t0 = Instant::now();
         let mut c = CounterRoll::new(150);
-        c.update(41, "0041", false, t0);
-        c.update(42, "0042", true, t0);
+        c.update(41., "0041", false, t0);
+        c.update(42., "0042", true, t0);
         let d = c.digits();
         assert_eq!(d.len(), 4);
         assert!(d[..3].iter().all(|x| x.start.is_none()));
@@ -320,9 +320,9 @@ mod tests {
     fn fast_changes_do_not_restart_roll() {
         let t0 = Instant::now();
         let mut c = CounterRoll::new(150);
-        c.update(1, "0001", false, t0);
-        c.update(2, "0002", true, t0);
-        c.update(3, "0003", true, t0 + Duration::from_millis(50));
+        c.update(1., "0001", false, t0);
+        c.update(2., "0002", true, t0);
+        c.update(3., "0003", true, t0 + Duration::from_millis(50));
         let d = c.digits()[3];
         assert_eq!((d.prev, d.cur, d.start), ('1', '3', Some(t0)));
         assert!(!c.is_active(t0 + Duration::from_millis(160)));
@@ -332,11 +332,11 @@ mod tests {
     fn counter_rolls_down_and_widens() {
         let t0 = Instant::now();
         let mut c = CounterRoll::new(150);
-        c.update(9999, "9999", false, t0);
-        c.update(10000, "10000", true, t0);
+        c.update(9999., "9999", false, t0);
+        c.update(10000., "10000", true, t0);
         assert_eq!(c.digits().len(), 5);
         assert_eq!(c.digits()[4].prev, '9');
-        c.update(500, "0500", true, t0 + Duration::from_millis(200));
+        c.update(500., "0500", true, t0 + Duration::from_millis(200));
         assert_eq!((c.digits()[1].cur, c.digits()[1].dir), ('5', RollDir::Down));
     }
 
