@@ -91,8 +91,11 @@ Die Statuszeile unten zeigt immer die Kürzel der aktuellen Ansicht – sie sind
 
 Gespeichert in `settings.json`:
 
-- **ascii-hintergrund** an/aus, mit **dichte** und **geschwindigkeit** – Zeichen-Rauschen hinter
-  allem, pausiert bei inaktivem Fenster.
+- **ascii-hintergrund** an/aus – Zeichen-Muster hinter allem, pausiert bei inaktivem Fenster.
+  Einstellbar:
+  - **muster:** wolken (Rauschen), wellen, plasma, ringe, regen (fallende Spalten), sterne (Funkeln)
+  - **zeichen:** klassisch (`.:-=+*#`), blöcke (`░▒▓█`), binär (`01`), punkte (`·•●`), zahlen (`1–9`)
+  - **dichte**, **größe** (fein/normal/grob), **deckkraft** (hauch bis stark), **geschwindigkeit**
 - **animationen** an/aus – Zähler-Rollen, Log-Entschlüsseln, Pakete, Button-Effekte, Blinken.
 - **zahlen:** `voll` (`10048514 B`), `kb/mb` (`10.05 MB`, 1000er, bis QB) oder `kib/mib`
   (`9.58 MiB`, 1024er, bis QiB). Ganz große Werte werden wissenschaftlich geschrieben (`1.23e35 B`).

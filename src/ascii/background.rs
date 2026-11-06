@@ -1,7 +1,114 @@
-//! ASCII-Hintergrund: Gitter aus Zeichenzellen, pro Zelle ein 3D-Value-Noise
-//! n(x, y, t). `t` läuft langsam weiter – das ergibt das sanfte Wabern.
+//! ASCII-Hintergrund: Gitter aus Zeichenzellen. Ein Muster liefert pro Zelle
+//! einen Wert 0…1 zur Zeit `t`, ein Zeichensatz macht daraus ein Zeichen.
 
-const RAMP: &[char] = &[' ', ' ', '.', '·', ':', '-', '=', '+', '*', '#'];
+use serde::{Deserialize, Serialize};
+use std::f32::consts::TAU;
+
+/// Welches Muster den Hintergrund füllt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Pattern {
+    /// Weiches Rauschen, das langsam wabert.
+    #[default]
+    Clouds,
+    /// Überlagerte Sinuswellen.
+    Waves,
+    /// Klassischer Plasma-Effekt.
+    Plasma,
+    /// Ringe, die von der Mitte nach außen laufen.
+    Rings,
+    /// Fallende Zeichenspalten.
+    Rain,
+    /// Vereinzelte, funkelnde Punkte.
+    Stars,
+}
+
+impl Pattern {
+    pub const ALL: [Pattern; 6] = [
+        Pattern::Clouds,
+        Pattern::Waves,
+        Pattern::Plasma,
+        Pattern::Rings,
+        Pattern::Rain,
+        Pattern::Stars,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Pattern::Clouds => "wolken",
+            Pattern::Waves => "wellen",
+            Pattern::Plasma => "plasma",
+            Pattern::Rings => "ringe",
+            Pattern::Rain => "regen",
+            Pattern::Stars => "sterne",
+        }
+    }
+}
+
+/// Aus welchen Zeichen der Hintergrund besteht – jeweils von leer nach dicht.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Charset {
+    #[default]
+    Classic,
+    Blocks,
+    Binary,
+    Dots,
+    Digits,
+}
+
+impl Charset {
+    pub const ALL: [Charset; 5] = [
+        Charset::Classic,
+        Charset::Blocks,
+        Charset::Binary,
+        Charset::Dots,
+        Charset::Digits,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Charset::Classic => "klassisch",
+            Charset::Blocks => "blöcke",
+            Charset::Binary => "binär",
+            Charset::Dots => "punkte",
+            Charset::Digits => "zahlen",
+        }
+    }
+
+    /// Erstes Zeichen ist immer leer.
+    fn ramp(self) -> &'static [char] {
+        match self {
+            Charset::Classic => &[' ', ' ', '.', '·', ':', '-', '=', '+', '*', '#'],
+            Charset::Blocks => &[' ', ' ', '░', '░', '▒', '▒', '▓', '█'],
+            Charset::Binary => &[' ', ' ', ' ', '0', '1', '1'],
+            Charset::Dots => &[' ', ' ', '.', '·', '•', '●'],
+            Charset::Digits => &[' ', ' ', '1', '2', '3', '4', '5', '6', '7', '8', '9'],
+        }
+    }
+}
+
+/// Alles, was das Aussehen bestimmt.
+#[derive(Debug, Clone, Copy)]
+pub struct Style {
+    pub pattern: Pattern,
+    pub charset: Charset,
+    /// Verschiebt die Dichte: positiv = mehr Zeichen, negativ = weniger.
+    pub bias: f32,
+    /// Größe der Formen: > 1 = gröber, < 1 = feiner.
+    pub scale: f32,
+}
+
+impl Default for Style {
+    fn default() -> Self {
+        Self {
+            pattern: Pattern::Clouds,
+            charset: Charset::Classic,
+            bias: 0.0,
+            scale: 1.0,
+        }
+    }
+}
 
 fn hash(x: i32, y: i32, z: i32) -> f32 {
     let mut h = (x as u32).wrapping_mul(0x9E37_79B9)
@@ -47,17 +154,81 @@ fn fbm(x: f32, y: f32, z: f32) -> f32 {
     (a * 0.67 + b * 0.33).clamp(0.0, 1.0)
 }
 
+/// Flächige Muster: Kontrast anheben und um `bias` verschieben.
+fn shade(n: f32, bias: f32) -> f32 {
+    (n - 0.5) * 1.8 + 0.4 + bias
+}
+
+/// Wert einer Zelle in 0…1. Zellen sind etwa doppelt so hoch wie breit,
+/// deshalb wird `y` überall doppelt gewichtet.
+fn sample(style: &Style, x: usize, y: usize, cols: usize, rows: usize, t: f32) -> f32 {
+    let (xf, yf) = (x as f32 / style.scale, y as f32 * 2.0 / style.scale);
+    let bias = style.bias;
+    let v = match style.pattern {
+        Pattern::Clouds => shade(fbm(xf * 0.07, yf * 0.075, t * 0.35), bias),
+        Pattern::Waves => {
+            let w = (xf * 0.16 + t * 2.0).sin() + (yf * 0.11 - t * 1.3 + xf * 0.04).sin();
+            shade(0.5 + w * 0.25, bias)
+        }
+        Pattern::Plasma => {
+            let (cx, cy) = (xf - cols as f32 / 2.0, yf - rows as f32);
+            let d = (cx * cx + cy * cy).sqrt();
+            let p = (xf * 0.09 + t).sin()
+                + (yf * 0.07 - t * 1.3).sin()
+                + ((xf + yf) * 0.05 + t * 0.7).sin()
+                + (d * 0.08 - t).sin();
+            shade(0.5 + p * 0.125, bias)
+        }
+        Pattern::Rings => {
+            let (cx, cy) = (
+                x as f32 - cols as f32 / 2.0,
+                (y as f32 - rows as f32 / 2.0) * 2.0,
+            );
+            let d = (cx * cx + cy * cy).sqrt() / style.scale;
+            shade(0.5 + 0.5 * (d * 0.35 - t * 3.0).sin(), bias)
+        }
+        Pattern::Rain => {
+            // Jede Spalte hat eigene Geschwindigkeit, Länge und Startversatz.
+            let column = x as i32;
+            if hash(column, 0, 1) > 0.55 + bias * 2.0 {
+                return 0.0;
+            }
+            let speed = 0.5 + hash(column, 0, 2);
+            let tail = (6.0 + hash(column, 0, 3) * 10.0) * style.scale;
+            let period = rows as f32 + tail + hash(column, 0, 4) * rows as f32;
+            let head = (t * 40.0 * speed + hash(column, 0, 5) * period) % period;
+            let behind = head - y as f32;
+            if (0.0..tail).contains(&behind) {
+                1.0 - behind / tail
+            } else {
+                0.0
+            }
+        }
+        Pattern::Stars => {
+            let (cell_x, cell_y) = (x as i32, y as i32);
+            if hash(cell_x, cell_y, 7) < 0.965 - bias * 0.15 {
+                return 0.0;
+            }
+            let twinkle = 0.5
+                + 0.5
+                    * (t * 8.0 * (0.5 + hash(cell_x, cell_y, 8)) + hash(cell_x, cell_y, 9) * TAU)
+                        .sin();
+            0.35 + 0.65 * twinkle
+        }
+    };
+    v.clamp(0.0, 0.999)
+}
+
 /// Erzeugt das komplette Gitter als Zeilen-Strings (eine Zeile = ein Text-Element,
-/// nicht jede Zelle einzeln). `bias` verschiebt die Rampe: mehr = dichter.
-pub fn render_rows(cols: usize, rows: usize, t: f32, bias: f32) -> Vec<String> {
+/// nicht jede Zelle einzeln).
+pub fn render_rows(cols: usize, rows: usize, t: f32, style: &Style) -> Vec<String> {
+    let ramp = style.charset.ramp();
     (0..rows)
         .map(|y| {
             (0..cols)
                 .map(|x| {
-                    // Zellen sind etwa doppelt so hoch wie breit → y stärker skalieren.
-                    let n = fbm(x as f32 * 0.07, y as f32 * 0.15, t * 0.35);
-                    let v = ((n - 0.5) * 1.8 + 0.4 + bias).clamp(0.0, 0.999);
-                    RAMP[((v * RAMP.len() as f32) as usize).min(RAMP.len() - 1)]
+                    let v = sample(style, x, y, cols, rows, t);
+                    ramp[((v * ramp.len() as f32) as usize).min(ramp.len() - 1)]
                 })
                 .collect()
         })
@@ -67,6 +238,20 @@ pub fn render_rows(cols: usize, rows: usize, t: f32, bias: f32) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn style(pattern: Pattern) -> Style {
+        Style {
+            pattern,
+            ..Style::default()
+        }
+    }
+
+    fn filled(rows: &[String]) -> usize {
+        rows.iter()
+            .flat_map(|r| r.chars())
+            .filter(|c| *c != ' ')
+            .count()
+    }
 
     #[test]
     fn noise_is_smooth_but_not_flat() {
@@ -79,36 +264,94 @@ mod tests {
     }
 
     #[test]
-    fn rows_have_requested_size() {
-        let rows = render_rows(40, 10, 0.0, 0.0);
-        assert_eq!(rows.len(), 10);
-        assert!(rows.iter().all(|r| r.chars().count() == 40));
-    }
-
-    #[test]
     fn noise_stays_in_range() {
         for i in 0..1000 {
-            let n = value_noise(
-                i as f32 * 0.13,
-                i as f32 * 0.27,
-                i as f32 * 0.09,
-            );
-    
+            let n = value_noise(i as f32 * 0.13, i as f32 * 0.27, i as f32 * 0.09);
             assert!((0.0..=1.0).contains(&n));
         }
     }
-    
+
+    #[test]
+    fn every_pattern_fills_the_grid_but_not_completely() {
+        for pattern in Pattern::ALL {
+            let rows = render_rows(60, 20, 1.5, &style(pattern));
+            assert_eq!(rows.len(), 20, "{pattern:?}");
+            assert!(rows.iter().all(|r| r.chars().count() == 60), "{pattern:?}");
+            let n = filled(&rows);
+            assert!(n > 0 && n < 60 * 20, "{pattern:?}: {n} gefüllt");
+        }
+    }
+
+    #[test]
+    fn every_pattern_moves_over_time() {
+        for pattern in Pattern::ALL {
+            let a = render_rows(60, 20, 1.0, &style(pattern));
+            let b = render_rows(60, 20, 2.0, &style(pattern));
+            assert_ne!(a, b, "{pattern:?} steht still");
+        }
+    }
+
     #[test]
     fn rendering_is_deterministic() {
-        let a = render_rows(40, 10, 1.5, 0.0);
-        let b = render_rows(40, 10, 1.5, 0.0);
-    
-        assert_eq!(a, b);
+        assert_eq!(
+            render_rows(40, 10, 1.5, &Style::default()),
+            render_rows(40, 10, 1.5, &Style::default())
+        );
     }
-    
+
+    #[test]
+    fn charsets_only_use_their_own_characters() {
+        for charset in Charset::ALL {
+            let rows = render_rows(
+                60,
+                20,
+                1.5,
+                &Style {
+                    charset,
+                    ..Style::default()
+                },
+            );
+            assert!(
+                rows.iter()
+                    .flat_map(|r| r.chars())
+                    .all(|c| charset.ramp().contains(&c)),
+                "{charset:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bias_controls_density() {
+        for pattern in Pattern::ALL {
+            let sparse = filled(&render_rows(
+                60,
+                20,
+                1.5,
+                &Style {
+                    bias: -0.18,
+                    ..style(pattern)
+                },
+            ));
+            let dense = filled(&render_rows(
+                60,
+                20,
+                1.5,
+                &Style {
+                    bias: 0.16,
+                    ..style(pattern)
+                },
+            ));
+            assert!(dense > sparse, "{pattern:?}: {sparse} vs {dense}");
+        }
+    }
+
     #[test]
     fn empty_dimensions_work() {
-        assert!(render_rows(0, 10, 0.0, 0.0).iter().all(String::is_empty));
-        assert!(render_rows(10, 0, 0.0, 0.0).is_empty());
+        assert!(
+            render_rows(0, 10, 0.0, &Style::default())
+                .iter()
+                .all(String::is_empty)
+        );
+        assert!(render_rows(10, 0, 0.0, &Style::default()).is_empty());
     }
 }

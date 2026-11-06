@@ -207,7 +207,9 @@ impl ClickerApp {
         match save::store(GAME_FILE, &data) {
             Ok(()) => true,
             Err(e) => {
-                self.session.log.warn(format!("speichern fehlgeschlagen: {e}"));
+                self.session
+                    .log
+                    .warn(format!("speichern fehlgeschlagen: {e}"));
                 false
             }
         }

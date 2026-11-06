@@ -1,5 +1,6 @@
 //! Einstellungen des Spielers (gespeichert in `settings.json`).
 
+use crate::ascii::background::{Charset, Pattern};
 use crate::format::NumberFormat;
 use crate::theme;
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,57 @@ pub enum Speed {
     #[default]
     Mid,
     Fast,
+}
+
+/// Wie deutlich der Hintergrund durchscheint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Strength {
+    Faint,
+    #[default]
+    Low,
+    Mid,
+    High,
+}
+
+/// Größe der Formen im Hintergrund.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Scale {
+    Fine,
+    #[default]
+    Mid,
+    Coarse,
+}
+
+impl Strength {
+    pub const ALL: [Strength; 4] = [
+        Strength::Faint,
+        Strength::Low,
+        Strength::Mid,
+        Strength::High,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Strength::Faint => "hauch",
+            Strength::Low => "leicht",
+            Strength::Mid => "mittel",
+            Strength::High => "stark",
+        }
+    }
+}
+
+impl Scale {
+    pub const ALL: [Scale; 3] = [Scale::Fine, Scale::Mid, Scale::Coarse];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Scale::Fine => "fein",
+            Scale::Mid => "normal",
+            Scale::Coarse => "grob",
+        }
+    }
 }
 
 impl Density {
@@ -80,6 +132,10 @@ pub struct Settings {
     pub ascii_background: bool,
     pub density: Density,
     pub speed: Speed,
+    pub pattern: Pattern,
+    pub charset: Charset,
+    pub strength: Strength,
+    pub scale: Scale,
     pub animations: bool,
     pub number_format: NumberFormat,
     /// Ob das Intro (Hilfe-Seite beim ersten Start) schon gezeigt wurde.
@@ -93,6 +149,10 @@ impl Default for Settings {
             ascii_background: false,
             density: Density::default(),
             speed: Speed::default(),
+            pattern: Pattern::default(),
+            charset: Charset::default(),
+            strength: Strength::default(),
+            scale: Scale::default(),
             animations: true,
             number_format: NumberFormat::Full,
             intro_seen: false,
@@ -112,5 +172,23 @@ mod tests {
         assert_eq!(broken.density, Density::High);
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains(r#""density":2"#));
+    }
+
+    #[test]
+    fn background_style_roundtrips_and_defaults() {
+        let old: Settings = serde_json::from_str(r#"{"density": 1}"#).unwrap();
+        assert_eq!(
+            (old.pattern, old.charset),
+            (Pattern::Clouds, Charset::Classic)
+        );
+        let s = Settings {
+            pattern: Pattern::Rain,
+            charset: Charset::Binary,
+            scale: Scale::Coarse,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains(r#""pattern":"rain""#), "{json}");
+        assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), s);
     }
 }

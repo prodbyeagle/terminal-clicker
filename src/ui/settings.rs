@@ -1,8 +1,9 @@
 //! Settings-Ansicht: Liste der Einstellungen und Theme-Kacheln.
 
+use crate::ascii::background::{Charset, Pattern};
 use crate::format::NumberFormat;
 use crate::save::SETTINGS_FILE;
-use crate::settings::{Density, Settings, Speed};
+use crate::settings::{Density, Scale, Settings, Speed, Strength};
 use crate::theme;
 use crate::ui::list::{self, ListScreen, cycle};
 use crate::ui::msg::{Msg, Screen};
@@ -11,21 +12,29 @@ use crate::ui::session::Session;
 use crate::ui::status_bar::Hint;
 use crate::ui::view::View;
 use crate::ui::widgets::{list_row, panel, separator};
-use gpui::{AnyElement, Div, MouseButton, div, prelude::*, px};
+use gpui::{AnyElement, Div, MouseButton, ScrollHandle, div, prelude::*, px};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Item {
     AsciiBackground,
+    Pattern,
+    Charset,
     Density,
+    Scale,
+    Strength,
     Speed,
     Animations,
     Numbers,
     Theme,
 }
 
-const ITEMS: [Item; 6] = [
+const ITEMS: [Item; 10] = [
     Item::AsciiBackground,
+    Item::Pattern,
+    Item::Charset,
     Item::Density,
+    Item::Scale,
+    Item::Strength,
     Item::Speed,
     Item::Animations,
     Item::Numbers,
@@ -36,7 +45,11 @@ fn change(settings: &mut Settings, item: Item, delta: i32) {
     match item {
         Item::AsciiBackground => settings.ascii_background = !settings.ascii_background,
         Item::Animations => settings.animations = !settings.animations,
+        Item::Pattern => settings.pattern = cycle(&Pattern::ALL, settings.pattern, delta),
+        Item::Charset => settings.charset = cycle(&Charset::ALL, settings.charset, delta),
         Item::Density => settings.density = cycle(&Density::ALL, settings.density, delta),
+        Item::Scale => settings.scale = cycle(&Scale::ALL, settings.scale, delta),
+        Item::Strength => settings.strength = cycle(&Strength::ALL, settings.strength, delta),
         Item::Speed => settings.speed = cycle(&Speed::ALL, settings.speed, delta),
         Item::Numbers => {
             settings.number_format = cycle(&NumberFormat::ALL, settings.number_format, delta)
@@ -51,6 +64,7 @@ fn change(settings: &mut Settings, item: Item, delta: i32) {
 #[derive(Default)]
 pub struct SettingsScreen {
     selected: usize,
+    scroll: ScrollHandle,
 }
 
 impl ListScreen for SettingsScreen {
@@ -64,6 +78,7 @@ impl ListScreen for SettingsScreen {
 
     fn set_selected(&mut self, index: usize) {
         self.selected = index;
+        self.scroll.scroll_to_item(index);
     }
 
     fn activate(&mut self, index: usize, s: &mut Session) {
@@ -127,7 +142,11 @@ impl Page for SettingsScreen {
                 Item::AsciiBackground => {
                     (check(settings.ascii_background), "ascii-hintergrund", false)
                 }
+                Item::Pattern => (stepper(i, settings.pattern.label()), "  muster", true),
+                Item::Charset => (stepper(i, settings.charset.label()), "  zeichen", true),
                 Item::Density => (stepper(i, settings.density.label()), "  dichte", true),
+                Item::Scale => (stepper(i, settings.scale.label()), "  größe", true),
+                Item::Strength => (stepper(i, settings.strength.label()), "  deckkraft", true),
                 Item::Speed => (
                     stepper(i, settings.speed.label()),
                     "  geschwindigkeit",
@@ -149,9 +168,20 @@ impl Page for SettingsScreen {
         panel(theme, "SETTINGS")
             .w(px(600.))
             .max_w_full()
+            .max_h_full()
             .child(separator(theme))
-            .children(rows)
-            .child(theme_picker(settings, v))
+            .child(
+                div()
+                    .id("setting-rows")
+                    .flex()
+                    .flex_col()
+                    .flex_shrink()
+                    .min_h(px(0.))
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .children(rows)
+                    .child(theme_picker(settings, v)),
+            )
             .child(
                 div()
                     .pt(px(12.))

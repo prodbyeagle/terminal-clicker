@@ -108,7 +108,9 @@ impl Page for HelpScreen {
                 theme,
                 "SETTINGS",
                 vec![
-                    text_row("ascii-hintergrund, animationen, themes,"),
+                    text_row("ascii-hintergrund: muster, zeichen, dichte,"),
+                    text_row("größe, deckkraft, geschwindigkeit."),
+                    text_row("animationen, themes,"),
                     text_row(&format!("zahlenformat ({}).", formats.join(" / "))),
                 ],
                 KEY_W,
