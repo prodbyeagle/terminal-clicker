@@ -37,17 +37,20 @@ impl NumberFormat {
             NumberFormat::Full => None,
             NumberFormat::Si => Some((
                 1000.,
-                &["B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB", "RB", "QB"],
+                &[
+                    "B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB", "RB", "QB",
+                ],
             )),
             NumberFormat::Binary => Some((
                 1024.,
-                &["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB", "RiB", "QiB"],
+                &[
+                    "B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB", "RiB", "QiB",
+                ],
             )),
         }
     }
 }
 
-/// 1.0 → "1", 1.5 → "1.5"
 pub fn trim_float(v: f64) -> String {
     if v.abs() >= FULL_SCI_FROM {
         return sci(v);
@@ -59,13 +62,41 @@ pub fn trim_float(v: f64) -> String {
     }
 }
 
-/// Wissenschaftliche Schreibweise mit zwei Nachkommastellen: `1.23e24`.
-pub fn sci(v: f64) -> String {
+fn sci(v: f64) -> String {
     format!("{v:.2e}")
 }
 
-/// Umgerechnet in die größte passende Einheit, oder `None` bei `voll`
-/// bzw. Werten unter 1 KB.
+/// Ganze Zahl mit Tausenderpunkten (`1.234.567`), ab 10^21 wissenschaftlich.
+pub fn grouped(v: f64) -> String {
+    if v.abs() >= FULL_SCI_FROM {
+        return sci(v);
+    }
+    let digits = format!("{:.0}", v.floor());
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push('.');
+        }
+        out.push(c);
+    }
+    out
+}
+
+pub fn bar(share: f64, width: usize) -> String {
+    let filled = ((share.clamp(0., 1.) * width as f64).round() as usize).min(width);
+    format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
+}
+
+pub fn duration(seconds: f64) -> String {
+    let s = seconds.max(0.) as u64;
+    let (h, m, s) = (s / 3600, (s / 60) % 60, s % 60);
+    if h > 0 {
+        format!("{h}h {m:02}m {s:02}s")
+    } else {
+        format!("{m}m {s:02}s")
+    }
+}
+
 fn scaled(v: f64, f: NumberFormat) -> Option<String> {
     let (base, units) = f.scale()?;
     if v.abs() < base {
@@ -93,17 +124,14 @@ fn full(v: f64, width: usize) -> String {
     }
 }
 
-/// Byte-Menge, z. B. Kosten oder ein Paket: `451 B`, `10.05 MB`.
 pub fn bytes(v: f64, f: NumberFormat) -> String {
     scaled(v, f).unwrap_or_else(|| full(v, 0))
 }
 
-/// Wie [`bytes`], aber bei `voll` vierstellig mit Nullen (`0042 B`), wie im Plan.
 pub fn bytes_padded(v: f64, f: NumberFormat) -> String {
     scaled(v, f).unwrap_or_else(|| full(v, 4))
 }
 
-/// Rate pro Sekunde (darf Nachkommastellen haben): `1.5 B/s`, `1.20 MB/s`.
 pub fn rate(v: f64, f: NumberFormat) -> String {
     match scaled(v, f) {
         Some(s) => format!("{s}/s"),
@@ -159,6 +187,17 @@ mod tests {
         assert_eq!(bytes(4e27, Si), "4.00 RB");
         assert_eq!(bytes(5e30, Si), "5.00 QB");
         assert_eq!(bytes(6e35, Si), "6.00e35 B");
+    }
+
+    #[test]
+    fn grouped_and_duration() {
+        assert_eq!(grouped(999.), "999");
+        assert_eq!(grouped(1_234_567.), "1.234.567");
+        assert_eq!(grouped(2e25), "2.00e25");
+        assert_eq!(duration(65.), "1m 05s");
+        assert_eq!(duration(3725.), "1h 02m 05s");
+        assert_eq!(bar(0.5, 4), "██░░");
+        assert_eq!(bar(2.0, 3), "███");
     }
 
     #[test]

@@ -49,7 +49,11 @@ mod mac {
             return;
         };
         // Typ-Kodierung: BOOL, self (@), _cmd (:). Auf Apple Silicon ist BOOL ein `bool` (B).
-        let types = if cfg!(target_arch = "aarch64") { c"B@:" } else { c"c@:" };
+        let types = if cfg!(target_arch = "aarch64") {
+            c"B@:"
+        } else {
+            c"c@:"
+        };
         unsafe {
             let imp: extern "C" fn(&Object, Sel) -> BOOL = cannot_move_window;
             class_addMethod(

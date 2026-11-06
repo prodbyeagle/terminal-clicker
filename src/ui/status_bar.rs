@@ -1,38 +1,44 @@
 use crate::theme::Theme;
-use gpui::{Action, Div, MouseButton, div, prelude::*, px};
+use crate::ui::keys;
+use crate::ui::msg::{Emit, Msg, Screen};
+use gpui::{Div, MouseButton, div, prelude::*, px};
 
-/// Ein Kürzel in der Statuszeile. Mit `action` ist es auch per Maus klickbar.
-pub struct KeyHint {
-    pub key: &'static str,
-    pub label: &'static str,
-    pub action: Option<Box<dyn Action>>,
+const STATUS_BAR_H: f32 = 30.;
+
+pub struct Hint {
+    keys: String,
+    label: &'static str,
+    msg: Option<Msg>,
 }
 
-impl KeyHint {
-    pub fn new(key: &'static str, label: &'static str, action: impl Action) -> Self {
+impl Hint {
+    pub fn new(msg: Msg, label: &'static str) -> Self {
         Self {
-            key,
+            keys: keys::label(&[msg]),
             label,
-            action: Some(Box::new(action)),
+            msg: Some(msg),
         }
     }
 
-    /// Nur Hinweis, kein Klickziel (z. B. `↑↓ wählen`).
-    pub fn info(key: &'static str, label: &'static str) -> Self {
+    /// Wechsel zu einer Ansicht, beschriftet mit ihrem Namen.
+    pub fn open(screen: Screen) -> Self {
+        Self::new(Msg::Open(screen), screen.name())
+    }
+
+    pub fn info(msgs: &[Msg], label: &'static str) -> Self {
         Self {
-            key,
+            keys: keys::label(msgs),
             label,
-            action: None,
+            msg: None,
         }
     }
 }
 
-/// Statuszeile: links Werte, rechts alle Kürzel der aktuellen Ansicht.
-pub fn render_status_bar(theme: &Theme, left: String, keys: Vec<KeyHint>) -> Div {
+pub fn render_status_bar(theme: &Theme, left: String, hints: Vec<Hint>, emit: &Emit) -> Div {
     let hover_bg = theme.line;
     div()
         .flex_none()
-        .h(px(30.))
+        .h(px(STATUS_BAR_H))
         .px(px(8.))
         .flex()
         .items_center()
@@ -53,22 +59,19 @@ pub fn render_status_bar(theme: &Theme, left: String, keys: Vec<KeyHint>) -> Div
                 .flex()
                 .flex_none()
                 .gap(px(4.))
-                .children(keys.into_iter().map(|hint| {
+                .children(hints.into_iter().map(|hint| {
                     let item = div()
                         .flex()
                         .gap(px(6.))
                         .px(px(6.))
                         .whitespace_nowrap()
-                        .child(hint.key)
+                        .child(hint.keys)
                         .child(div().text_color(theme.dim).child(hint.label));
-                    match hint.action {
-                        Some(action) => item
+                    match hint.msg {
+                        Some(msg) => item
                             .cursor_pointer()
                             .hover(move |s| s.bg(hover_bg))
-                            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                                cx.stop_propagation();
-                                window.dispatch_action(action.boxed_clone(), cx);
-                            }),
+                            .on_mouse_down(MouseButton::Left, emit.on_press(msg)),
                         None => item,
                     }
                 })),

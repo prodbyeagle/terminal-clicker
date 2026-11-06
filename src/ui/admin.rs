@@ -1,13 +1,23 @@
-//! Admin-Panel: Bytes und Upgrades geben, Zeitraffer, Reset – plus Stats.
+//! Admin-Panel (nur mit `--admin`): Bytes und Upgrades geben, Events auslösen,
+//! Zeitraffer, Reset – plus Stats.
 
-use crate::game::{EVENT_WEIGHTS, Game, UPGRADES};
+use crate::format::{self, bar, grouped, trim_float};
+use crate::game::UPGRADES;
+use crate::game::events::EventKind;
 use crate::theme::Theme;
-use crate::ui::main_view::ClickerApp;
-use crate::ui::upgrades::trim_float;
-use gpui::{Context, Div, MouseButton, div, prelude::*, px};
+use crate::ui::fx::Fx;
+use crate::ui::keys;
+use crate::ui::list::{self, ListScreen, cycle};
+use crate::ui::msg::{Msg, Screen};
+use crate::ui::page::Page;
+use crate::ui::session::Session;
+use crate::ui::status_bar::Hint;
+use crate::ui::view::View;
+use crate::ui::widgets::{list_row, panel, separator};
+use gpui::{AnyElement, Div, div, prelude::*, px};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Item {
+enum Item {
     Grant(f64),
     Times10,
     UnlockAll,
@@ -17,7 +27,7 @@ pub enum Item {
     Reset,
 }
 
-pub const ITEMS: [Item; 11] = [
+const ITEMS: [Item; 11] = [
     Item::Grant(1e3),
     Item::Grant(1e6),
     Item::Grant(1e9),
@@ -31,83 +41,283 @@ pub const ITEMS: [Item; 11] = [
     Item::Reset,
 ];
 
-/// Zeitraffer-Stufen für passives Einkommen.
-pub const TIME_SCALES: [u32; 4] = [1, 10, 100, 1000];
+const TIME_SCALES: [f64; 4] = [1.0, 10.0, 100.0, 1000.0];
+const RESET_CONFIRM_SECS: f64 = 4.0;
 
-/// Was das Panel außer dem Spielstand noch anzeigt.
-pub struct AdminInfo {
-    /// Gewähltes Event für „event auslösen“: 0 = zufällig, sonst Index+1 in `EVENT_WEIGHTS`.
-    pub event_choice: usize,
-    pub clicks_per_second: f64,
-    pub session_seconds: f64,
-    pub packets: usize,
-    pub time_scale: u32,
-    /// Reset wurde einmal ausgelöst und wartet auf Bestätigung.
-    pub reset_armed: bool,
+#[derive(Default)]
+pub struct AdminScreen {
+    selected: usize,
+    /// `None` = zufälliges Event.
+    event: Option<EventKind>,
+    /// Sitzungszeit, zu der der Reset scharf geschaltet wurde.
+    reset_armed_at: Option<f64>,
 }
 
-/// 1234567 → "1.234.567"; ab 10^21 wissenschaftlich (`1.23e24`).
-pub fn fmt_num(v: f64) -> String {
-    if v.abs() >= 1e21 {
-        return crate::format::sci(v);
+impl AdminScreen {
+    fn reset_armed(&self, now: f64) -> bool {
+        self.reset_armed_at
+            .is_some_and(|t| now - t < RESET_CONFIRM_SECS)
     }
-    let digits = format!("{:.0}", v.floor());
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push('.');
+
+    fn event_choices() -> Vec<Option<EventKind>> {
+        std::iter::once(None)
+            .chain(EventKind::ALL.map(Some))
+            .collect()
+    }
+
+    fn label(&self, item: Item, s: &Session) -> String {
+        match item {
+            Item::Grant(n) => format!("+{} B", grouped(n)),
+            Item::Times10 => "bytes ×10".into(),
+            Item::UnlockAll => "alle upgrades freischalten".into(),
+            Item::LevelAll => "+1 level auf alle upgrades".into(),
+            Item::SpawnEvent => {
+                let name = self.event.map_or("zufällig".into(), |k| k.name());
+                format!("event auslösen  <{name}>")
+            }
+            Item::TimeWarp => format!("zeitraffer  <×{}>", s.time_scale),
+            Item::Reset if self.reset_armed(s.now()) => {
+                format!(
+                    "wirklich zurücksetzen? nochmal {}",
+                    keys::label(&[Msg::Confirm])
+                )
+            }
+            Item::Reset => "spielstand zurücksetzen".into(),
         }
-        out.push(c);
     }
-    out
+
+    fn render_stats(&self, s: &Session, v: &View) -> Div {
+        let (theme, game) = (&v.theme, &s.game);
+        let total_rate = game.per_second();
+        let mut sources: Vec<(usize, f64)> = (0..UPGRADES.len())
+            .map(|i| (i, game.source_rate(i)))
+            .filter(|(_, r)| *r > 0.)
+            .collect();
+        sources.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+        panel(theme, "STATS")
+            .w(px(420.))
+            .flex_shrink()
+            .min_w(px(0.))
+            .gap(px(2.))
+            .child(separator(theme))
+            .child(stat(theme, "bytes", grouped(game.whole_bytes())))
+            .child(stat(theme, "verdient gesamt", grouped(game.total_earned)))
+            .child(stat(
+                theme,
+                "klicks gesamt",
+                grouped(game.total_clicks as f64),
+            ))
+            .child(stat(theme, "B/klick", grouped(game.per_click())))
+            .child(stat(
+                theme,
+                "klicks/s",
+                format!("{:.1}", game.clicks_per_second(s.now())),
+            ))
+            .child(stat(theme, "B/s", trim_float(total_rate)))
+            .child(stat(
+                theme,
+                "passiv-multiplikator",
+                format!("×{}", trim_float(game.passive_multiplier())),
+            ))
+            .child(stat(
+                theme,
+                "upgrades gekauft",
+                game.upgrades_bought().to_string(),
+            ))
+            .child(stat(
+                theme,
+                "freigeschaltet",
+                format!("{}/{}", game.unlocked_count(), UPGRADES.len()),
+            ))
+            .child(stat(
+                theme,
+                "spielzeit",
+                format::duration(game.played_seconds),
+            ))
+            .child(stat(theme, "sitzung", format::duration(s.now())))
+            .child(stat(
+                theme,
+                "pakete aktiv",
+                s.anim.count(v.now, Fx::is_packet).to_string(),
+            ))
+            .child(stat(theme, "zeitraffer", format!("×{}", s.time_scale)))
+            .child(stat(
+                theme,
+                "krit-chance",
+                format!("{} %", trim_float(game.crit_chance() * 100.)),
+            ))
+            .child(stat(
+                theme,
+                "offline-anteil",
+                format!("{} %", trim_float(game.offline_fraction() * 100.)),
+            ))
+            .child(stat(
+                theme,
+                "kosten-faktor",
+                format!("×{:.3}", game.cost_multiplier()),
+            ))
+            .child(stat(
+                theme,
+                "event-abstand",
+                format!("×{:.2}", game.event_interval_multiplier()),
+            ))
+            .child(
+                div()
+                    .pt(px(12.))
+                    .px(px(10.))
+                    .text_color(theme.dim)
+                    .child("einkommen nach quelle"),
+            )
+            .children(sources.into_iter().map(|(i, rate)| {
+                div()
+                    .flex()
+                    .gap(px(10.))
+                    .px(px(10.))
+                    .child(
+                        div()
+                            .w(px(110.))
+                            .flex_none()
+                            .overflow_hidden()
+                            .child(UPGRADES[i].id),
+                    )
+                    .child(
+                        div()
+                            .text_color(theme.dim)
+                            .child(bar(rate / total_rate, 12)),
+                    )
+                    .child(
+                        div()
+                            .whitespace_nowrap()
+                            .child(format!("{} B/s", trim_float(rate))),
+                    )
+            }))
+    }
 }
 
-/// 3725 s → "1h 02m 05s"
-pub fn fmt_duration(seconds: f64) -> String {
-    let s = seconds.max(0.) as u64;
-    let (h, m, s) = (s / 3600, (s / 60) % 60, s % 60);
-    if h > 0 {
-        format!("{h}h {m:02}m {s:02}s")
-    } else {
-        format!("{m}m {s:02}s")
+impl ListScreen for AdminScreen {
+    fn len(&self) -> usize {
+        ITEMS.len()
+    }
+
+    fn selected(&self) -> usize {
+        self.selected
+    }
+
+    fn set_selected(&mut self, index: usize) {
+        if index != self.selected {
+            self.reset_armed_at = None;
+        }
+        self.selected = index;
+    }
+
+    fn activate(&mut self, index: usize, s: &mut Session) {
+        let now = s.now();
+        let (game, out) = (&mut s.game, &mut s.happened);
+        match ITEMS[index] {
+            Item::Grant(n) => {
+                game.admin_grant(n, out);
+                s.log.event(format!("admin: +{} B", grouped(n)));
+            }
+            Item::Times10 => {
+                let add = game.bytes * 9.;
+                game.admin_grant(add, out);
+                s.log.event("admin: bytes ×10");
+            }
+            Item::UnlockAll => {
+                game.admin_unlock_all(out);
+                s.log.event("admin: alles freigeschaltet");
+            }
+            Item::LevelAll => {
+                game.admin_level_all(out);
+                s.log.event("admin: +1 level auf alles");
+            }
+            Item::SpawnEvent => {
+                let kind = self.event.unwrap_or_else(|| s.events.random_kind());
+                s.events.spawn(kind, now);
+                s.log.event("admin: event ausgelöst (in main)");
+            }
+            Item::TimeWarp => self.adjust(index, 1, s),
+            Item::Reset if self.reset_armed(now) => {
+                game.admin_reset(out);
+                s.log.event("admin: spielstand zurückgesetzt");
+            }
+            Item::Reset => {
+                self.reset_armed_at = Some(now);
+                s.log.warn(format!(
+                    "nochmal {} zum zurücksetzen",
+                    keys::label(&[Msg::Confirm])
+                ));
+                return;
+            }
+        }
+        self.reset_armed_at = None;
+        s.save_game = true;
+    }
+
+    fn adjust(&mut self, index: usize, delta: i32, s: &mut Session) {
+        match ITEMS[index] {
+            Item::TimeWarp => {
+                s.time_scale = cycle(&TIME_SCALES, s.time_scale, delta);
+                s.log.event(format!("admin: zeitraffer ×{}", s.time_scale));
+            }
+            Item::SpawnEvent => self.event = cycle(&Self::event_choices(), self.event, delta),
+            _ => {}
+        }
     }
 }
 
-fn label(item: Item, info: &AdminInfo) -> String {
-    match item {
-        Item::Grant(n) => format!("+{} B", fmt_num(n)),
-        Item::Times10 => "bytes ×10".into(),
-        Item::UnlockAll => "alle upgrades freischalten".into(),
-        Item::LevelAll => "+1 level auf alle upgrades".into(),
-        Item::SpawnEvent => format!("event auslösen  <{}>", event_choice_label(info.event_choice)),
-        Item::TimeWarp => format!("zeitraffer  <×{}>", info.time_scale),
-        Item::Reset if info.reset_armed => "wirklich zurücksetzen? nochmal enter".into(),
-        Item::Reset => "spielstand zurücksetzen".into(),
+impl Page for AdminScreen {
+    fn hints(&self, _s: &Session) -> Vec<Hint> {
+        vec![
+            Hint::info(&[Msg::Move(-1), Msg::Move(1)], "wählen"),
+            Hint::new(Msg::Confirm, "ausführen"),
+            Hint::info(
+                &[Msg::AdjustSelected(-1), Msg::AdjustSelected(1)],
+                "auswahl",
+            ),
+            Hint::new(Msg::Back, "zurück"),
+        ]
     }
-}
 
-/// Name der Auswahl für „event auslösen“.
-pub fn event_choice_label(choice: usize) -> String {
-    match choice.checked_sub(1).and_then(|i| EVENT_WEIGHTS.get(i)) {
-        Some((kind, _)) => kind.title().to_lowercase(),
-        None => "zufällig".into(),
+    fn handle(&mut self, msg: Msg, s: &mut Session) -> Option<Screen> {
+        list::handle(self, msg, s);
+        None
     }
-}
 
-fn panel(theme: &Theme, title: &'static str) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(2.))
-        .w(px(420.))
-        .flex_shrink()
-        .min_w(px(0.))
-        .p(px(16.))
-        .bg(theme.bg)
-        .border_1()
-        .border_color(theme.line)
-        .child(div().pb(px(10.)).child(title))
-        .child(div().border_b_1().border_color(theme.line).mb(px(6.)))
+    fn render(&self, s: &Session, v: &View) -> AnyElement {
+        let theme = &v.theme;
+        let actions = ITEMS.iter().enumerate().map(|(i, item)| {
+            let is_sel = i == self.selected;
+            list_row("admin", i, is_sel, is_sel, v)
+                .py(px(5.))
+                .when(*item == Item::Reset && !is_sel, |d| d.text_color(theme.dim))
+                .child(self.label(*item, s))
+        });
+        let footer = format!(
+            "# {}/klick = ausführen · {} = auswahl ändern",
+            keys::label(&[Msg::Confirm]),
+            keys::label(&[Msg::AdjustSelected(-1), Msg::AdjustSelected(1)])
+        );
+
+        div()
+            .flex()
+            .gap(px(16.))
+            .items_start()
+            .max_w_full()
+            .child(
+                panel(theme, "ADMIN")
+                    .w(px(420.))
+                    .flex_shrink()
+                    .min_w(px(0.))
+                    .gap(px(2.))
+                    .child(separator(theme))
+                    .children(actions)
+                    .child(div().pt(px(12.)).text_color(theme.dim).child(footer)),
+            )
+            .child(self.render_stats(s, v))
+            .into_any_element()
+    }
 }
 
 fn stat(theme: &Theme, name: &str, value: String) -> Div {
@@ -120,147 +330,40 @@ fn stat(theme: &Theme, name: &str, value: String) -> Div {
         .child(div().whitespace_nowrap().child(value))
 }
 
-/// Anteil als Balken aus Blockzeichen, z. B. `██████░░░░░░`.
-pub fn bar(share: f64, width: usize) -> String {
-    let filled = ((share.clamp(0., 1.) * width as f64).round() as usize).min(width);
-    format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
-}
-
-pub fn render_admin(
-    game: &Game,
-    info: &AdminInfo,
-    selected: usize,
-    theme: &Theme,
-    cx: &mut Context<ClickerApp>,
-) -> Div {
-    let actions: Vec<_> = ITEMS
-        .iter()
-        .enumerate()
-        .map(|(i, item)| {
-            let is_sel = i == selected;
-            let danger = matches!(item, Item::Reset);
-            let (fg, bg) = if is_sel { (theme.bg, theme.fg) } else { (theme.fg, theme.bg) };
-            div()
-                .id(("admin", i))
-                .flex()
-                .px(px(10.))
-                .py(px(5.))
-                .bg(bg)
-                .text_color(fg)
-                .cursor_pointer()
-                .when(danger && !is_sel, |d| d.text_color(theme.dim))
-                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                    if *hovered {
-                        this.hover_admin(i, cx);
-                    }
-                }))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| this.click_admin(i, 1, cx)),
-                )
-                .on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |this, _, _, cx| this.click_admin(i, -1, cx)),
-                )
-                .child(div().w(px(24.)).flex_none().child(if is_sel { ">" } else { "" }))
-                .child(label(*item, info))
-        })
-        .collect();
-
-    let total_rate = game.per_second();
-    let mut sources: Vec<(usize, f64)> = (0..UPGRADES.len())
-        .map(|i| (i, game.source_rate(i)))
-        .filter(|(_, r)| *r > 0.)
-        .collect();
-    sources.sort_by(|a, b| b.1.total_cmp(&a.1));
-
-    let stats = panel(theme, "STATS")
-        .child(stat(theme, "bytes", fmt_num(game.whole_bytes())))
-        .child(stat(theme, "verdient gesamt", fmt_num(game.total_earned)))
-        .child(stat(theme, "klicks gesamt", fmt_num(game.total_clicks as f64)))
-        .child(stat(theme, "B/klick", fmt_num(game.per_click())))
-        .child(stat(theme, "klicks/s", format!("{:.1}", info.clicks_per_second)))
-        .child(stat(theme, "B/s", trim_float(total_rate)))
-        .child(stat(
-            theme,
-            "passiv-multiplikator",
-            format!("×{}", trim_float(game.passive_multiplier())),
-        ))
-        .child(stat(theme, "upgrades gekauft", game.upgrades_bought().to_string()))
-        .child(stat(
-            theme,
-            "freigeschaltet",
-            format!("{}/{}", game.unlocked_count(), UPGRADES.len()),
-        ))
-        .child(stat(theme, "spielzeit", fmt_duration(game.played_seconds)))
-        .child(stat(theme, "sitzung", fmt_duration(info.session_seconds)))
-        .child(stat(theme, "pakete aktiv", info.packets.to_string()))
-        .child(stat(theme, "zeitraffer", format!("×{}", info.time_scale)))
-        .child(stat(theme, "krit-chance", format!("{} %", trim_float(game.crit_chance() * 100.))))
-        .child(stat(
-            theme,
-            "offline-anteil",
-            format!("{} %", trim_float(game.offline_fraction() * 100.)),
-        ))
-        .child(stat(theme, "kosten-faktor", format!("×{:.3}", game.cost_multiplier())))
-        .child(stat(
-            theme,
-            "event-abstand",
-            format!("×{:.2}", game.event_interval_multiplier()),
-        ))
-        .child(
-            div()
-                .pt(px(12.))
-                .px(px(10.))
-                .text_color(theme.dim)
-                .child("einkommen nach quelle"),
-        )
-        .children(sources.into_iter().map(|(i, rate)| {
-            div()
-                .flex()
-                .gap(px(10.))
-                .px(px(10.))
-                .child(div().w(px(110.)).flex_none().overflow_hidden().child(UPGRADES[i].id))
-                .child(div().text_color(theme.dim).child(bar(rate / total_rate, 12)))
-                .child(div().whitespace_nowrap().child(format!("{} B/s", trim_float(rate))))
-        }));
-
-    div()
-        .flex()
-        .gap(px(16.))
-        .items_start()
-        .max_w_full()
-        .child(
-            panel(theme, "ADMIN")
-                .children(actions)
-                .child(
-                    div()
-                        .pt(px(12.))
-                        .text_color(theme.dim)
-                        .child("# enter/klick = ausführen · ←→ = auswahl ändern"),
-                ),
-        )
-        .child(stats)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::Game;
+    use crate::settings::Settings;
+    use crate::ui::log::Log;
 
-    #[test]
-    fn formats_numbers_and_durations() {
-        assert_eq!(fmt_num(0.), "0");
-        assert_eq!(fmt_num(999.), "999");
-        assert_eq!(fmt_num(1_000.), "1.000");
-        assert_eq!(fmt_num(1_234_567.), "1.234.567");
-        assert_eq!(fmt_num(2e25), "2.00e25");
-        assert_eq!(fmt_duration(65.), "1m 05s");
-        assert_eq!(fmt_duration(3725.), "1h 02m 05s");
+    fn session_with_bytes() -> Session {
+        let mut s = Session::new(Game::new(), Settings::default(), Log::default(), true, 0);
+        s.game.bytes = 500.0;
+        s
+    }
+
+    fn reset_index() -> usize {
+        ITEMS.iter().position(|i| *i == Item::Reset).unwrap()
     }
 
     #[test]
-    fn bar_fills_by_share() {
-        assert_eq!(bar(0.5, 4), "██░░");
-        assert_eq!(bar(2.0, 3), "███");
+    fn reset_needs_a_second_confirmation() {
+        let mut s = session_with_bytes();
+        let mut admin = AdminScreen::default();
+        list::handle(&mut admin, Msg::Activate(reset_index()), &mut s);
+        assert_eq!(s.game.bytes, 500.0);
+        list::handle(&mut admin, Msg::Activate(reset_index()), &mut s);
+        assert_eq!(s.game.bytes, 0.0);
+    }
+
+    #[test]
+    fn moving_away_disarms_the_reset() {
+        let mut s = session_with_bytes();
+        let mut admin = AdminScreen::default();
+        list::handle(&mut admin, Msg::Activate(reset_index()), &mut s);
+        list::handle(&mut admin, Msg::Move(-1), &mut s);
+        list::handle(&mut admin, Msg::Activate(reset_index()), &mut s);
+        assert_eq!(s.game.bytes, 500.0);
     }
 }

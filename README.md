@@ -120,33 +120,41 @@ Zum Testen umlenkbar: `TERMINAL_CLICKER_DIR=/irgendwo cargo run`.
 
 ```
 src/
-├─ main.rs            App starten, Fenster, Tastenbelegung, --admin
-├─ game.rs            Spielzustand, Upgrades, Events/Boni, Admin-Funktionen (kennt GPUI nicht)
-├─ format.rs          Zahlenformat voll / KB / KiB
+├─ main.rs            Schrift, Tastenbelegung, Fenster öffnen, --admin
+├─ game/              Spiellogik ohne UI – komplett per `cargo test` prüfbar
+│  ├─ mod.rs          Spielstand, Klicken, Einkommen, Kaufen, Offline, Admin-Funktionen
+│  ├─ upgrades.rs     Upgrade-Katalog (Kosten, Effekt, Beschreibung)
+│  └─ events.rs       Events, Boni und der Taktgeber, der sie auftauchen lässt
+├─ settings.rs        Einstellungen (typisierte Werte, kompatibel zu alten Dateien)
+├─ format.rs          Zahlen: voll / KB / KiB, Tausenderpunkte, Dauer, Balken
 ├─ theme.rs           Theme-Liste THEMES + „system“
-├─ save.rs            JSON laden/speichern, Settings
-├─ ascii/
-│  ├─ anim.rs         Frame-Animator, Zählwerk-Rollen, Entschlüsseln-Effekt
-│  └─ background.rs   3D-Value-Noise-Hintergrund
+├─ save.rs            JSON laden/speichern; defekte Dateien werden beiseitegelegt
+├─ rng.rs             ein Zufallsgenerator für Spiel und Deko
+├─ ascii/             Zeichen-Effekte: Animator, Zählwerk, Entschlüsseln, Hintergrund
 └─ ui/
-   ├─ main_view.rs    Root-View: Ansichten, Aktionen, Loops, Titelleiste, Events, Pakete
-   ├─ upgrades.rs     Upgrade-Tabelle
-   ├─ settings.rs     Settings-Liste und Theme-Kacheln
-   ├─ help.rs         Hilfe / Intro
-   ├─ admin.rs        Admin-Panel und Stats
-   ├─ log.rs          Log-Panel
-   ├─ status_bar.rs   Statuszeile mit klickbaren Kürzeln
-   └─ window_drag.rs  Fenster ziehen über AppKit (macOS)
+   ├─ app.rs          verarbeitet jede Eingabe an einer Stelle, Takt, Rahmen
+   ├─ msg.rs          alles, was der Spieler tun kann, als `Msg`
+   ├─ keys.rs         die Tastenbelegung – einmal (Bindungen, Statuszeile, Hilfe)
+   ├─ page.rs         was jede Ansicht kann (die App kennt nur dieses Interface)
+   ├─ session.rs      gemeinsamer Zustand: Spiel, Settings, Log, Events, Animationen
+   ├─ list.rs         gemeinsame Bedienung aller Listen-Ansichten
+   ├─ boot.rs · main_screen.rs · upgrades.rs · settings.rs · help.rs · admin.rs   die Ansichten
+   ├─ packets.rs      Datenpakete (passives Einkommen sichtbar)
+   ├─ fx.rs           die Effekte, die der Animator abspielt
+   ├─ widgets.rs      Kasten und Listenzeile, gleich für alle Ansichten
+   ├─ title_bar.rs    eigene Titelleiste (+ window_drag.rs für macOS)
+   └─ backdrop.rs · log.rs · status_bar.rs · layout.rs · view.rs
 ```
 
 ## Erweitern
 
-**Neues Upgrade:** in `src/game.rs` an `UPGRADES` anhängen (nach `unlock_at` sortiert, ein Test
-prüft das). Level werden per `id` gespeichert, alte Spielstände bleiben gültig. Die Beschreibung
-kommt in `description()` in `src/ui/upgrades.rs`.
+**Neues Upgrade:** in `src/game/upgrades.rs` an `UPGRADES` anhängen (nach `unlock_at` sortiert,
+ein Test prüft das). Level werden per `id` gespeichert, alte Spielstände bleiben gültig. Eine neue
+Effekt-Art braucht zusätzlich Text in `Effect::label`/`kind_help` (gleiche Datei) – der Compiler
+erinnert daran.
 
 ```rust
-up("fusion.core", 5e21, 1.15, 4e21, Effect::PerSecond(3e15)),
+up("fusion.core", 5e21, 1.15, 4e21, Effect::PerSecond(3e15), "kernfusion im taschenformat."),
 ```
 
 **Neues Theme:** in `src/theme.rs` an `THEMES` anhängen – erscheint automatisch in den Settings.
@@ -165,9 +173,14 @@ ThemeDef {
 „system“ nimmt `SYSTEM_LIGHT` bzw. `SYSTEM_DARK`. Eine gespeicherte ID, die es nicht mehr gibt,
 fällt auf „system“ zurück.
 
-**Neues Event:** `EventKind` in `src/game.rs` erweitern (`title`, `description`, Wirkung in
-`trigger_event`, ggf. eine neue `BuffKind` mit Wirkung in `passive_buff` / `click_buff`) und in
-`EVENT_WEIGHTS` eintragen, wie oft es kommen soll.
+**Neues Event:** `EventKind` in `src/game/events.rs` erweitern (`title`, `description`, Wirkung in
+`action`, ggf. eine neue `BuffKind`) und in `EventKind::ALL` und `weight()` eintragen.
+Hilfe-Seite und Admin-Panel übernehmen es automatisch.
+
+**Neue Ansicht:** `Screen` in `src/ui/msg.rs` erweitern (inkl. `ALL`), `Page` implementieren und in
+`ClickerApp::page`/`page_mut` eintragen – der Compiler zeigt beide Stellen.
+
+**Neue Taste:** eine Zeile im `keymap!` in `src/ui/keys.rs` – Bindung, Statuszeile und Hilfe lesen von dort.
 
 ## Lizenz
 

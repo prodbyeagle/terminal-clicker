@@ -1,11 +1,20 @@
+//! Settings-Ansicht: Liste der Einstellungen und Theme-Kacheln.
+
 use crate::format::NumberFormat;
-use crate::save::{LEVEL_LABELS, SPEED_LABELS, Settings};
-use crate::theme::{self, Theme};
-use crate::ui::main_view::ClickerApp;
-use gpui::{Context, Div, MouseButton, WindowAppearance, div, prelude::*, px};
+use crate::save::SETTINGS_FILE;
+use crate::settings::{Density, Settings, Speed};
+use crate::theme;
+use crate::ui::list::{self, ListScreen, cycle};
+use crate::ui::msg::{Msg, Screen};
+use crate::ui::page::Page;
+use crate::ui::session::Session;
+use crate::ui::status_bar::Hint;
+use crate::ui::view::View;
+use crate::ui::widgets::{list_row, panel, separator};
+use gpui::{AnyElement, Div, MouseButton, div, prelude::*, px};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Item {
+enum Item {
     AsciiBackground,
     Density,
     Speed,
@@ -14,7 +23,7 @@ pub enum Item {
     Theme,
 }
 
-pub const ITEMS: [Item; 6] = [
+const ITEMS: [Item; 6] = [
     Item::AsciiBackground,
     Item::Density,
     Item::Speed,
@@ -23,195 +32,189 @@ pub const ITEMS: [Item; 6] = [
     Item::Theme,
 ];
 
-fn step(value: usize, delta: i32, len: usize) -> usize {
-    (value as i32 + delta).rem_euclid(len as i32) as usize
-}
-
-/// Wert eines Eintrags um `delta` verändern (enter/klick = +1, ←/→ bzw. Rechtsklick = -1).
-pub fn change(settings: &mut Settings, item: Item, delta: i32) {
+fn change(settings: &mut Settings, item: Item, delta: i32) {
     match item {
         Item::AsciiBackground => settings.ascii_background = !settings.ascii_background,
         Item::Animations => settings.animations = !settings.animations,
-        Item::Density => {
-            settings.density = step(settings.density as usize, delta, LEVEL_LABELS.len()) as u8
-        }
-        Item::Speed => {
-            settings.speed = step(settings.speed as usize, delta, SPEED_LABELS.len()) as u8
-        }
+        Item::Density => settings.density = cycle(&Density::ALL, settings.density, delta),
+        Item::Speed => settings.speed = cycle(&Speed::ALL, settings.speed, delta),
         Item::Numbers => {
-            let all = NumberFormat::ALL;
-            let i = all.iter().position(|f| *f == settings.number_format).unwrap_or(0);
-            settings.number_format = all[step(i, delta, all.len())];
+            settings.number_format = cycle(&NumberFormat::ALL, settings.number_format, delta)
         }
         Item::Theme => {
             let all: Vec<&str> = theme::choices().collect();
-            let i = all.iter().position(|c| *c == settings.theme).unwrap_or(0);
-            settings.theme = all[step(i, delta, all.len())].to_string();
+            settings.theme = cycle(&all, settings.theme.as_str(), delta).to_string();
         }
     }
 }
 
-fn check(on: bool) -> String {
-    if on { "[x]".into() } else { "[ ]".into() }
+#[derive(Default)]
+pub struct SettingsScreen {
+    selected: usize,
 }
 
-/// `< wert >` mit klickbaren Pfeilen links/rechts.
-fn stepper(index: usize, value: &str, cx: &mut Context<ClickerApp>) -> Div {
-    let arrow = |label: &'static str, delta: i32, cx: &mut Context<ClickerApp>| {
-        div()
-            .px(px(6.))
-            .cursor_pointer()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.click_setting(index, delta, cx);
-                }),
+impl ListScreen for SettingsScreen {
+    fn len(&self) -> usize {
+        ITEMS.len()
+    }
+
+    fn selected(&self) -> usize {
+        self.selected
+    }
+
+    fn set_selected(&mut self, index: usize) {
+        self.selected = index;
+    }
+
+    fn activate(&mut self, index: usize, s: &mut Session) {
+        self.adjust(index, 1, s);
+    }
+
+    fn adjust(&mut self, index: usize, delta: i32, s: &mut Session) {
+        change(&mut s.settings, ITEMS[index], delta);
+        if !s.settings.animations {
+            s.anim.clear();
+        }
+        s.save_settings = true;
+    }
+}
+
+impl Page for SettingsScreen {
+    fn hints(&self, _s: &Session) -> Vec<Hint> {
+        vec![
+            Hint::info(&[Msg::Move(-1), Msg::Move(1)], "wählen"),
+            Hint::new(Msg::Confirm, "umschalten"),
+            Hint::info(&[Msg::AdjustSelected(-1), Msg::AdjustSelected(1)], "ändern"),
+            Hint::open(Screen::Upgrades),
+            Hint::new(Msg::Back, "zurück"),
+        ]
+    }
+
+    fn handle(&mut self, msg: Msg, s: &mut Session) -> Option<Screen> {
+        match msg {
+            Msg::PickTheme(id) => {
+                s.settings.theme = id.to_string();
+                s.save_settings = true;
+            }
+            msg => list::handle(self, msg, s),
+        }
+        None
+    }
+
+    fn render(&self, s: &Session, v: &View) -> AnyElement {
+        let (theme, settings) = (&v.theme, &s.settings);
+        let check = |on: bool| div().child(if on { "[x]" } else { "[ ]" });
+        let stepper = |index: usize, value: &str| {
+            let arrow = |label: &'static str, delta: i32| {
+                div()
+                    .px(px(6.))
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        v.emit.on_press(Msg::Adjust(index, delta)),
+                    )
+                    .child(label)
+            };
+            div()
+                .flex()
+                .child(arrow("<", -1))
+                .child(value.to_string())
+                .child(arrow(">", 1))
+        };
+
+        let rows = ITEMS.iter().enumerate().map(|(i, item)| {
+            let (mark, label, needs_background) = match item {
+                Item::AsciiBackground => {
+                    (check(settings.ascii_background), "ascii-hintergrund", false)
+                }
+                Item::Density => (stepper(i, settings.density.label()), "  dichte", true),
+                Item::Speed => (
+                    stepper(i, settings.speed.label()),
+                    "  geschwindigkeit",
+                    true,
+                ),
+                Item::Animations => (check(settings.animations), "animationen", false),
+                Item::Numbers => (stepper(i, settings.number_format.label()), "zahlen", false),
+                Item::Theme => (stepper(i, theme::label(&settings.theme)), "theme", false),
+            };
+            let is_sel = i == self.selected;
+            let greyed = needs_background && !settings.ascii_background;
+            list_row("setting", i, is_sel, is_sel, v)
+                .py(px(6.))
+                .when(greyed && !is_sel, |d| d.text_color(theme.dim))
+                .child(div().w(px(140.)).flex_none().child(mark))
+                .child(div().flex_1().child(label))
+        });
+
+        panel(theme, "SETTINGS")
+            .w(px(600.))
+            .max_w_full()
+            .child(separator(theme))
+            .children(rows)
+            .child(theme_picker(settings, v))
+            .child(
+                div()
+                    .pt(px(12.))
+                    .text_color(theme.dim)
+                    .child("# klick = umschalten · rechtsklick = zurück"),
             )
-            .child(label)
-    };
-    div()
-        .flex()
-        .child(arrow("<", -1, cx))
-        .child(value.to_string())
-        .child(arrow(">", 1, cx))
+            .child(
+                div()
+                    .text_color(theme.dim)
+                    .child(format!("# gespeichert in {SETTINGS_FILE}")),
+            )
+            .into_any_element()
+    }
 }
 
-/// Theme-Auswahl als Kacheln, jede in ihren eigenen Farben – ein Klick wählt sie.
-fn theme_picker(
-    settings: &Settings,
-    theme: &Theme,
-    appearance: WindowAppearance,
-    cx: &mut Context<ClickerApp>,
-) -> Div {
-    let chip = |id: &'static str, cx: &mut Context<ClickerApp>| {
-        let preview = theme::resolve(id, appearance);
+/// Themes werden automatisch anhand ihrer tatsächlichen Breite umgebrochen.
+fn theme_picker(settings: &Settings, v: &View) -> Div {
+    let chip = |id: &'static str| {
+        let preview = theme::resolve(id, v.appearance);
         let active = settings.theme == id;
+
         div()
             .px(px(10.))
             .py(px(4.))
             .flex()
             .gap(px(8.))
+            .flex_none()
             .cursor_pointer()
             .bg(preview.bg)
             .text_color(preview.fg)
             .map(|d| {
                 if active {
-                    d.border_2().border_color(theme.fg)
+                    d.border_2().border_color(v.theme.fg)
                 } else {
-                    d.border_1().border_color(theme.line).m(px(1.))
+                    d.border_1().border_color(v.theme.line).m(px(1.))
                 }
             })
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| this.pick_theme(id, cx)),
+            .on_mouse_down(MouseButton::Left, v.emit.on_press(Msg::PickTheme(id)))
+            .child(
+                div()
+                    .text_color(preview.dim)
+                    .child(if active { ">" } else { "·" }),
             )
-            .child(div().text_color(preview.dim).child(if active { ">" } else { "·" }))
             .child(theme::label(id))
     };
 
-    // Feste Zeilen statt flex-wrap: das Layout misst Umbrüche sonst zu hoch.
     let ids: Vec<&'static str> = theme::choices().collect();
+
     div()
         .flex()
         .flex_col()
+        .w_full()
+        .max_w_full()
         .gap(px(6.))
         .pt(px(6.))
         .pl(px(34.))
-        .children(ids.chunks(CHIPS_PER_ROW).map(|row| {
-            div()
-                .flex()
-                .gap(px(6.))
-                .children(row.iter().map(|id| chip(id, cx)))
-        }))
-}
-
-const CHIPS_PER_ROW: usize = 5;
-
-/// Settings-Liste. Maus: überfahren = auswählen, klicken = umschalten/weiter,
-/// Rechtsklick = zurück, `<`/`>` = Wert ändern.
-pub fn render_settings(
-    settings: &Settings,
-    selected: usize,
-    theme: &Theme,
-    appearance: WindowAppearance,
-    cx: &mut Context<ClickerApp>,
-) -> Div {
-    let rows: Vec<_> = ITEMS
-        .iter()
-        .enumerate()
-        .map(|(i, item)| {
-            let (mark, label, dependent) = match item {
-                Item::AsciiBackground => (
-                    div().child(check(settings.ascii_background)),
-                    "ascii-hintergrund",
-                    false,
-                ),
-                Item::Density => (
-                    stepper(i, LEVEL_LABELS[settings.density as usize % 3], cx),
-                    "  dichte",
-                    true,
-                ),
-                Item::Speed => (
-                    stepper(i, SPEED_LABELS[settings.speed as usize % 3], cx),
-                    "  geschwindigkeit",
-                    true,
-                ),
-                Item::Animations => (div().child(check(settings.animations)), "animationen", false),
-                Item::Numbers => (stepper(i, settings.number_format.label(), cx), "zahlen", false),
-                Item::Theme => (stepper(i, theme::label(&settings.theme), cx), "theme", false),
-            };
-            let is_sel = i == selected;
-            let greyed = dependent && !settings.ascii_background;
-            let (fg, bg) = if is_sel { (theme.bg, theme.fg) } else { (theme.fg, theme.bg) };
-
-            div()
-                .id(("setting", i))
-                .flex()
-                .px(px(10.))
-                .py(px(6.))
-                .bg(bg)
-                .text_color(fg)
-                .cursor_pointer()
-                .when(greyed && !is_sel, |d| d.text_color(theme.dim))
-                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                    if *hovered {
-                        this.hover_setting(i, cx);
-                    }
-                }))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| this.click_setting(i, 1, cx)),
-                )
-                .on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |this, _, _, cx| this.click_setting(i, -1, cx)),
-                )
-                .child(div().w(px(24.)).flex_none().child(if is_sel { ">" } else { "" }))
-                .child(div().w(px(140.)).flex_none().child(mark))
-                .child(div().flex_1().child(label))
-        })
-        .collect();
-
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(4.))
-        .w(px(600.))
-        .max_w_full()
-        .p(px(16.))
-        .bg(theme.bg)
-        .border_1()
-        .border_color(theme.line)
-        .child(div().pb(px(10.)).child("SETTINGS"))
-        .child(div().border_b_1().border_color(theme.line).mb(px(6.)))
-        .children(rows)
-        .child(theme_picker(settings, theme, appearance, cx))
         .child(
             div()
-                .pt(px(12.))
-                .text_color(theme.dim)
-                .child("# klick = umschalten · rechtsklick = zurück"),
+                .flex()
+                .flex_wrap()
+                .w_full()
+                .max_w_full()
+                .gap(px(6.))
+                .children(ids.into_iter().map(chip)),
         )
-        .child(div().text_color(theme.dim).child("# gespeichert in settings.json"))
 }
